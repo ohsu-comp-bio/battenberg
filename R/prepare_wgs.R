@@ -194,11 +194,13 @@ generate_impute_input_wgs <- function(
 
   # Efficiently load and combine known SNP legend files
   # Replaces the for-loop/rbind pattern which is very slow in R
-  known_SNPs <- lapply(impute_info$impute_legend, function(file) {
-    data.table::fread(file, sep = " ", header = TRUE, data.table = FALSE)
-  }) |>
-    data.table::rbindlist() |>
-    as.data.frame()
+  # Efficiently load known SNP legend files using vroom
+  known_SNPs <- vroom::vroom(
+    unlist(impute_info$impute_legend),
+    delim = " ",
+    show_col_types = FALSE
+  )
+  data.table::setDF(known_SNPs)
 
   # Filter out 'problem' SNPs (BAF streaks)
   if (!is.na(problem_loci_file) && problem_loci_file != "NA") {
@@ -308,8 +310,9 @@ gc_correct_wgs <- function(
   Tumor_LogR <- read_logr(Tumour_LogR_file)
 
   # Efficiently load and combine GC data
+  # Efficiently load and combine GC data using vroom
   gc_files <- paste0(gc_content_file_prefix, chrom_names, ".txt.gz")
-  GC_data <- do.call(rbind, lapply(gc_files, read_gccontent))
+  GC_data <- vroom::vroom(gc_files, delim = "\t", show_col_types = FALSE)
 
   # Clean up the GC_data headers
   # The first column is often a duplicate of the third; we remove it safely
@@ -322,7 +325,7 @@ gc_correct_wgs <- function(
   has_replic <- !is.null(replic_timing_file_prefix)
   if (has_replic) {
     replic_files <- paste0(replic_timing_file_prefix, chrom_names, ".txt.gz")
-    replic_data <- do.call(rbind, lapply(replic_files, read_replication))
+    replic_data <- vroom::vroom(replic_files, delim = "\t", show_col_types = FALSE)
     colnames(replic_data) <- trimws(colnames(replic_data))
     if ("pos" %in% colnames(replic_data)) data.table::setnames(replic_data, "pos", "Position")
     if ("chr" %in% colnames(replic_data)) data.table::setnames(replic_data, "chr", "Chromosome")
@@ -359,10 +362,36 @@ gc_correct_wgs <- function(
 
   # instead of capping it at 100kb go to the end of the frame
   index_2kb <- which(names(corr) == "2kb")
+  if (length(index_2kb) == 0) {
+    # Fallback or logical guess if 2kb missing
+    log_warning("GC Correction: '2kb' column not found in GC headers. Using first 50% for insert, last 50% for amplic.")
+    mid_point <- floor(length(corr) / 2)
+    index_2kb <- mid_point
+  }
+
   maxGCcol_insert <- names(which.max(corr[1:index_2kb]))
-  maxGCcol_amplic <- names(which.max(corr[(index_2kb + 1):length(corr)]))
-  index_100kb <- which(names(corr) == "100kb")
-  maxGCcol_amplic <- names(which.max(corr[(index_2kb + 2):index_100kb]))
+
+  if (index_2kb < length(corr)) {
+    maxGCcol_amplic <- names(which.max(corr[(index_2kb + 1):length(corr)]))
+  } else {
+    maxGCcol_amplic <- maxGCcol_insert
+  }
+
+  index_100kb <- which(names(corr) == "100kb") # Unused variable in current logic but kept for consistency if needed later?
+  # Actually line 368 in original redefined maxGCcol_amplic using index_100kb?
+  # Original Line 368: maxGCcol_amplic <- names(which.max(corr[(index_2kb + 2):index_100kb]))
+  # This implies if 100kb exists, we restrict search?
+
+  if (length(index_100kb) > 0 && index_100kb > index_2kb) {
+    # Refine amplic search to be between 2kb and 100kb
+    start_idx <- index_2kb + 1
+    end_idx <- index_100kb
+    if (end_idx >= start_idx) {
+      maxGCcol_amplic <- names(which.max(corr[start_idx:end_idx]))
+    }
+  }
+
+  log_info("GC Correction: Selected Insert Column='{maxGCcol_insert}', Amplic Column='{maxGCcol_amplic}'")
 
   # Construct the design matrix for splines
   # We use intercept = TRUE for the first and FALSE for the others to avoid rank deficiency

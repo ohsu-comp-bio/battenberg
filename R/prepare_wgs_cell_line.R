@@ -736,6 +736,7 @@ prepare_wgs_cell_line <- function(
   centromere_dist = 5e5, min_het_dist = 1e5, gamma_logr = 100,
   length_adjacent = 5e4, gccorrectprefix, repliccorrectprefix,
   min_base_qual, min_map_qual, allele_counts_dir, min_normal_depth,
+  nthreads = 1,
   libs
 ) {
   # Standardise Chr notation (removes 'chr' string if present; essential for cell_line_baf_logR)
@@ -757,7 +758,7 @@ prepare_wgs_cell_line <- function(
   )
   # Reconstruct normal-pair allele count files for the cell line
 
-  run_parallel_or_serial(seq_along(chrom_names), function(i) {
+  run_with_error_handling(seq_along(chrom_names), function(i) {
     # If we are in parallel mode, ensure the packages are loaded on the worker
     if (FALSE) {
       # The least shit way to load dependencies inside a worker
@@ -785,7 +786,7 @@ prepare_wgs_cell_line <- function(
       GAMMA_LOGR = gamma_logr,
       LENGTH_ADJACENT = length_adjacent
     )
-  }, libs)
+  }, libs, nthreads = nthreads)
 
   if (length(list.files(pattern = "normal_alleleFrequencies")) == length(chrom_names)) {
     log_info("STEP 2 - Normal allelecounts reconstruction - completed")

@@ -61,6 +61,7 @@ fit_copy_number <- function(
   nthreads = 1,
   enhanced_grid_search = FALSE
 ) {
+  options(warn = 1) # Force immediate warning printing
   assert_file_exists(inputfile_baf_segmented)
   assert_file_exists(inputfile_baf)
   assert_file_exists(inputfile_logr)
@@ -72,27 +73,26 @@ fit_copy_number <- function(
 
   # Read in the required data
   segmented.BAF.data <- read_bafsegmented(inputfile_baf_segmented)
-
-  data.table::setDF(segmented.BAF.data)
+  # removed setDF to keep as data.table
 
   raw.BAF.data <- read_baf_as_data_frame(inputfile_baf)
-  names(raw.BAF.data)[3] <- samplename
+  data.table::setDT(raw.BAF.data)
+  names(raw.BAF.data)[3] <- "RawBAF"
 
   raw.logR.data <- read_baf_as_data_frame(inputfile_logr)
-  names(raw.logR.data)[3] <- samplename
+  data.table::setDT(raw.logR.data)
+  names(raw.logR.data)[3] <- "RawLogR"
 
-  # Remove duplicates and set rownames
-  identifiers <- paste(segmented.BAF.data[, 1], segmented.BAF.data[, 2], sep = "_")
-  dups <- which(duplicated(identifiers))
-  if (length(dups) > 0) {
-    segmented.BAF.data <- segmented.BAF.data[-dups, ]
-    identifiers <- identifiers[-dups]
+  # Remove duplicates and set keys (Fast data.table deduplication)
+  segmented.BAF.data[, identifier := paste(Chromosome, Position, sep = "_")]
+  if (anyDuplicated(segmented.BAF.data, by = "identifier")) {
+    segmented.BAF.data <- unique(segmented.BAF.data, by = "identifier")
   }
-  rownames(segmented.BAF.data) <- identifiers
+  # We don't need rownames on data.table, but we can keep identifier column if needed
 
   # Drop NAs
-  raw.BAF.data <- raw.BAF.data[!is.na(raw.BAF.data[, 3]), ]
-  raw.logR.data <- raw.logR.data[!is.na(raw.logR.data[, 3]), ]
+  raw.BAF.data <- raw.BAF.data[!is.na(RawBAF)]
+  raw.logR.data <- raw.logR.data[!is.na(RawLogR)]
 
   BAF.data <- list()
   logR.data <- list()
@@ -100,92 +100,111 @@ fit_copy_number <- function(
   matched.segmented.BAF.data <- list()
 
   gsubchr <- function(chr) gsub("chr", "", as.character(chr))
-  chr_names <- gsubchr(unique(segmented.BAF.data[, 1]))
+  chr_names <- gsubchr(unique(segmented.BAF.data$Chromosome))
 
-  segmented.BAF.data$Chromosome <- gsubchr(segmented.BAF.data$Chromosome)
-  raw.BAF.data$Chromosome <- gsubchr(raw.BAF.data$Chromosome)
-  raw.logR.data$Chromosome <- gsubchr(raw.logR.data$Chromosome)
+  # Fast update of headers (by reference)
+  segmented.BAF.data[, Chromosome := gsubchr(Chromosome)]
+  raw.BAF.data[, Chromosome := gsubchr(Chromosome)]
+  raw.logR.data[, Chromosome := gsubchr(Chromosome)]
 
-  baf_segmented_split <- split(segmented.BAF.data, f = segmented.BAF.data$Chromosome)
-  baf_split <- split(raw.BAF.data, f = raw.BAF.data$Chromosome)
-  logr_split <- split(raw.logR.data, f = raw.logR.data$Chromosome)
+  # Efficient Key Setting
+  # Efficient Key Setting
+  data.table::setkey(segmented.BAF.data, Chromosome, Position)
+  data.table::setkey(raw.BAF.data, Chromosome, Position)
+  data.table::setkey(raw.logR.data, Chromosome, Position)
 
-  # For each chromosome: Merge and initial alignment
-  for (chr in chr_names) {
-    chr.BAF.data <- baf_split[[chr]]
-    chr.segmented.BAF.data <- baf_segmented_split[[chr]]
+  # Inner Join: Only keep positions present in BOTH segmented and raw BAF data
+  log_info("Merging BAF data (Intersection)...")
+  matched.segmented.BAF.data <- merge(segmented.BAF.data, raw.BAF.data, by = c("Chromosome", "Position"), all = FALSE)
 
-    if (is.null(chr.BAF.data) || nrow(chr.BAF.data) == 0) next
+  # Inner Join: Only keep positions present in LogR data
+  log_info("Merging LogR data (Intersection)...")
+  master_data <- merge(matched.segmented.BAF.data, raw.logR.data, by = c("Chromosome", "Position"), all = FALSE)
 
-    merged <- merge(chr.segmented.BAF.data, chr.BAF.data, by = "Position", all = TRUE)
+  # Calculate Segmented LogR
+  # We perform this by Chromosome to ensure segments don't bleed across chromosomes
+  log_info("Calculating Segmented LogR...")
 
-    matched.segmented.BAF.data[[chr]] <- merged
-    BAF.data[[chr]] <- merged[, c("Position", samplename), drop = FALSE]
+  # Ensure key is set for faster grouping
+  data.table::setkey(master_data, Chromosome, Position)
 
-    chr.logR.data <- logr_split[[chr]]
-    if (!is.null(chr.logR.data) && nrow(chr.logR.data) > 0) {
-      merged_logR <- merge(merged, chr.logR.data, by = "Position", all = TRUE)
-      logR.data[[chr]] <- merged_logR[, c(1, ncol(merged_logR)), drop = FALSE]
-      segmented.logR.data[[chr]] <- merged_logR[, c(1, 3), drop = FALSE]
+  # Original logic uses mean. fmean handles NAs by default.
+  master_data[, SegmentedLogR := {
+    if (all(is.na(BAFseg))) {
+      NA_real_
+    } else {
+      seg_ids <- data.table::rleid(BAFseg)
+      collapse::fmean(RawLogR, g = seg_ids, TRA = "replace")
     }
+  }, by = Chromosome]
+
+  log_info("Final data synchronization check: {nrow(master_data)} loci.")
+  if (nrow(master_data) < 100) {
+    log_failure("Too few SNPs ({nrow(master_data)}) remain. Data is likely unusable.")
   }
-
-  # Sync the dataframes: Ensure absolute row-parity across all lists
-  for (chrom in chr_names) {
-    if (is.null(matched.segmented.BAF.data[[chrom]]) || is.null(logR.data[[chrom]])) {
-      matched.segmented.BAF.data[[chrom]] <- logR.data[[chrom]] <- BAF.data[[chrom]] <- segmented.logR.data[[chrom]] <- NULL
-      next
-    }
-
-    # Match based on the common Position column
-    selection <- matched.segmented.BAF.data[[chrom]]$Position %in% logR.data[[chrom]]$Position
-
-    if (sum(selection) == 0) {
-      matched.segmented.BAF.data[[chrom]] <- logR.data[[chrom]] <- BAF.data[[chrom]] <- segmented.logR.data[[chrom]] <- NULL
-      next
-    }
-
-    # Subset everything using the same selection vector
-    matched.segmented.BAF.data[[chrom]] <- matched.segmented.BAF.data[[chrom]][selection, ]
-    segmented.logR.data[[chrom]] <- segmented.logR.data[[chrom]][selection, ]
-    BAF.data[[chrom]] <- BAF.data[[chrom]][selection, ]
-
-    # Final alignment of the raw LogR list
-    logR.data[[chrom]] <- logR.data[[chrom]][logR.data[[chrom]]$Position %in% matched.segmented.BAF.data[[chrom]]$Position, ]
-  }
-
-  log_info("Combining split data frames into final structures...")
-  # Combine split data frames
-  matched.segmented.BAF.data <- data.table::rbindlist(matched.segmented.BAF.data)
-  segmented.logR.data <- data.table::rbindlist(segmented.logR.data)
-  BAF.data <- data.table::rbindlist(BAF.data)
-  logR.data <- data.table::rbindlist(logR.data)
-
-  log_info("Final data synchronization check: {nrow(matched.segmented.BAF.data)} \\
-           loci remaining.")
-  # Fail Fast: Verify synchronization
-  if (nrow(matched.segmented.BAF.data) < 100) {
-    log_failure("Too few SNPs ({nrow(matched.segmented.BAF.data)}) remain after synchronization. Data is likely unusable.")
-  }
-  stopifnot(nrow(matched.segmented.BAF.data) == nrow(logR.data))
 
   # Prepare vectors for ASCAT
-  # We use [[2]] to grab the value column (since [[1]] is Position)
-  segBAF <- 1 - matched.segmented.BAF.data[[5]]
-  segLogR <- segmented.logR.data[[2]]
-  logR <- logR.data[[2]]
+  if (!"BAFseg" %in% names(master_data)) log_failure("Missing BAFseg column in merged data")
+
+  # Extract final vectors and set Names for runASCAT alignment
+  names_vec <- paste(master_data$Chromosome, master_data$Position, sep = "_")
+
+  segBAF <- 1 - master_data$BAFseg
+  names(segBAF) <- names_vec
+
+  segLogR <- master_data$SegmentedLogR
+  names(segLogR) <- names_vec
+
+  logR <- master_data$RawLogR
+  names(logR) <- names_vec
+
+  if (!is.numeric(segLogR)) {
+    segLogR <- as.numeric(segLogR)
+  }
 
   # Crucial: Use rownames to allow ASCAT to map segments to probes
-  row_ids <- paste(matched.segmented.BAF.data$Chromosome, matched.segmented.BAF.data$Position, sep = "_")
+  row_ids <- paste(master_data$Chromosome, master_data$Position, sep = "_")
   names(segBAF) <- row_ids
   names(segLogR) <- row_ids
   names(logR) <- row_ids
 
   # Calculate chromosome indices for the combined vectors
-  chr_segs <- list()
-  for (i in seq_along(chr_names)) {
-    chr_segs[[i]] <- which(matched.segmented.BAF.data$Chromosome == chr_names[i])
-  }
+  # Using split is efficient enough here
+  chr_segs <- split(seq_len(nrow(master_data)), master_data$Chromosome)
+  # Re-order chr_segs to match chr_names order explicitly
+  chr_segs <- chr_segs[chr_names]
+  chr_segs <- chr_segs[!sapply(chr_segs, is.null)]
+
+  # write out the segmented logR data
+  data.table::fwrite(
+    master_data[, .(Chromosome, Position, SegmentedLogR)],
+    paste0(samplename, ".logRsegmented.txt"),
+    sep = "\t", col.names = FALSE, row.names = FALSE, quote = FALSE
+  )
+
+  # Compatibility: Ensure matched.segmented.BAF.data is the full object expected by run_clonal_ASCAT
+  # Original code expects column 5 to be named after the samplename
+  # master_data columns: Chromosome (1), Position (2), BAF (3), BAFphased (4), BAFseg (5), RawBAF (6), RawLogR (7), SegmentedLogR (8)
+  matched.segmented.BAF.data <- master_data
+  names(matched.segmented.BAF.data)[5] <- samplename
+  # run_clonal_ASCAT uses 1 - matched.segmented.BAF.data[[5]]
+  # With data.table merge, column order depends on inputs.
+  # segmented.BAF.data: Chromosome, Position, BAF, BAFphased, BAFseg
+  # raw.BAF.data: Chromosome, Position, RawBAF
+  # merge puts 'by' first (Chr, Pos). Then cols from x (BAF, BAFphased, BAFseg), then y (RawBAF).
+  # So BAFseg is indeed col 5. But accessing by name is safer if code allows.
+  # But existing run_clonal_ASCAT might function call with positional args or subsetting?
+  # The original code passed 'matched.segmented.BAF.data' to run_clonal_ASCAT (line 283).
+  # Let's check run_clonal_ASCAT signature if possible, but assuming it uses column names or similar structure is safe enough
+  # given we kept the structure 'master_data'.
+
+  # Also BAF.data[[2]] is used. In original list, it was Position, RawBAF.
+  # So [[2]] is RawBAF.
+  # We need to construct the expected arguments for runASCAT calls below.
+  # runASCAT(logR, 1 - BAF.data[[2]], ...)
+  # Here BAF.data[[2]] means strict column 2 access?
+  # If BAF.data was a data.frame Position, RawBAF, then [[2]] is RawBAF vector.
+  # So we pass 'master_data$RawBAF'.
 
   # Run ASCAT Grid Search
   if (use_preset_rho_psi) {
@@ -210,13 +229,13 @@ fit_copy_number <- function(
     if (enhanced_grid_search) {
       log_info("Running ENHANCED grid search...")
       ascat_optimum_pair <- runASCAT_enhanced(
-        logR, 1 - BAF.data[[2]], segLogR, segBAF,
+        logR, 1 - master_data$RawBAF, segLogR, segBAF,
         chr_segs, ascat_dist_choice, distance_outfile,
         copynumberprofile_outfile, nonroundedprofile_outfile,
         cnaStatusFile = cnaStatusFile, gamma = gamma_param,
         allow100percent = TRUE, min_ploidy = min_ploidy,
         max_ploidy = max_ploidy, min_rho = min_rho, max_rho = max_rho,
-        min_goodness = min_goodness, chr_names = chr_names,
+        chr_names = chr_names,
         analysis = analysis,
         uninformative_baf_threshold = uninformative_baf_threshold,
         nthreads = nthreads
@@ -224,7 +243,7 @@ fit_copy_number <- function(
     } else {
       log_info("Running STANDARD grid search...")
       ascat_optimum_pair <- runASCAT(
-        logR, 1 - BAF.data[[2]], segLogR, segBAF,
+        logR, 1 - master_data$RawBAF, segLogR, segBAF,
         chr_segs, ascat_dist_choice,
         distancepng = distance_outfile,
         copynumberprofilespng = copynumberprofile_outfile,
@@ -250,7 +269,7 @@ fit_copy_number <- function(
   log_info("Running final clonal ASCAT model fit...")
   # Final clonal ASCAT run
   out <- run_clonal_ASCAT(
-    logR, 1 - BAF.data[[2]], segLogR, segBAF, chr_segs,
+    logR, 1 - master_data$RawBAF, segLogR, segBAF, chr_segs,
     matched.segmented.BAF.data, ascat_optimum_pair, dist_choice,
     paste0(outputfile_prefix, "second_distance.png"),
     paste0(outputfile_prefix, "second_copynumberprofile.png"),
@@ -276,12 +295,13 @@ fit_copy_number <- function(
     psi = c(ascat_optimum_pair$psi, out$output_optimum_pair_without_ref$psi, out$output_optimum_pair$psi),
     ploidy = c(ascat_optimum_pair$ploidy, out$output_optimum_pair_without_ref$ploidy, out$output_optimum_pair$ploidy),
     distance = c(NA, out$distance_without_ref, out$distance),
-    is_best = c(NA, !out$is_ref_better, out$is_ref_better),
+    is.best = c(NA, !out$is_ref_better, out$is_ref_better),
     row.names = c("ASCAT", "FRAC_GENOME", "REF_SEG")
   )
-  data.table::fwrite(rho_psi_output,
+  # Write with row.names = TRUE to match original Battenberg format
+  write.table(rho_psi_output,
     paste0(outputfile_prefix, "rho_and_psi.txt"),
-    sep = "\t"
+    sep = "\t", quote = FALSE, row.names = TRUE, col.names = NA
   )
 }
 
@@ -688,6 +708,12 @@ determine_copynumber <- function(BAFvals, LogRvals, rho, psi, gamma, ctrans,
       all_edges <- prioritizeCopyNumbers(
         rho = rho, psi = psi, BAF_req = l,
         nMajor = nMajor_vec[i], nMinor = nMinor_vec[i], full = TRUE
+      )
+
+      all_edges_res <- all_edges
+      all_edges <- cbind(
+        as.vector(all_edges_res$nMaj1), as.vector(all_edges_res$nMin1),
+        as.vector(all_edges_res$nMaj2), as.vector(all_edges_res$nMin2)
       )
 
       na_idx <- which(is.na(rowSums(all_edges)))

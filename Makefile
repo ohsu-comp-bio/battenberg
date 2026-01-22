@@ -1,7 +1,10 @@
 .PHONY: style lint test deps check install docs pak
 
 docs:
-	Rscript -e "roxygen2::roxygenise(clean = TRUE, roclets = c('rd', 'namespace'))"
+	Rscript -e "roxygen2::roxygenise(clean = TRUE)"
+
+compile:
+	Rscript -e "Rcpp::compileAttributes()"
 
 # Run the auto-formatter (styler)
 style:

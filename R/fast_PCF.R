@@ -25,7 +25,6 @@ exactPcf <- function(y, kmin = 5, gamma, yest) {
   Sum <- rep(0, N)
   Kvad <- rep(0, N)
   Aver <- rep(0, N)
-  Cost <- rep(0, N)
   kminP1 <- kmin + 1
   for (k in (kminP1):(2 * kmin - 1)) {
     Sum[kminP1:k] <- Sum[kminP1:k] + y[k]
@@ -135,7 +134,6 @@ PottsCompact <- function(kmin, gamma, nr, res, sq, yest) {
   Ant <- rep(0, N)
   Sum <- rep(0, N)
   Kvad <- rep(0, N)
-  Cost <- rep(0, N)
   if (sum(nr) < 2 * kmin) {
     estim <- sum(res) / sum(nr)
     return(estim)
@@ -172,7 +170,6 @@ compact <- function(y, mark) {
 }
 
 
-
 markWithPotts <- function(kmin, gamma, nr, res, sq, subsize) {
   ## Potts filtering on compact array;
   ## kmin: minimal length of plateau
@@ -185,7 +182,6 @@ markWithPotts <- function(kmin, gamma, nr, res, sq, subsize) {
   Ant <- rep(0, N)
   Sum <- rep(0, N)
   Kvad <- rep(0, N)
-  Cost <- rep(0, N)
   markSub <- rep(FALSE, N)
   initAnt <- nr[1]
   initSum <- res[1]
@@ -215,7 +211,6 @@ markWithPotts <- function(kmin, gamma, nr, res, sq, subsize) {
 }
 
 
-
 filterMarkS4 <- function(x, kmin, L, L2, frac1, frac2, frac3, thres) {
   lengdeArr <- length(x)
   xc <- c(0, cumsum(x)) # Lead with 0 so xc[1] is 0
@@ -227,19 +222,23 @@ filterMarkS4 <- function(x, kmin, L, L2, frac1, frac2, frac3, thres) {
   cost1_full <- c(numeric(3 * L - 1), cost1, numeric(3 * L))
 
   # --- Rolling Max Parity ---
-  # Your pmax was: pmax(cost1[i], cost1[i+1], ..., cost1[i+6])
-  # To match 'rep(0, 3)' at both ends, we use align="center" with a window of 7
-  test1 <- RcppRoll::roll_max(cost1_full, n = 7, fill = 0, align = "center")
+  # Use original pmax approach for exact equivalence
+  in1 <- 1:(lengdeArr - 6)
+  test1_core <- pmax(
+    cost1_full[in1], cost1_full[in1 + 1], cost1_full[in1 + 2],
+    cost1_full[in1 + 3], cost1_full[in1 + 4], cost1_full[in1 + 5], cost1_full[in1 + 6]
+  )
+  test1 <- c(rep(0, 3), test1_core, rep(0, 3))
 
   cost1B <- cost1_full[cost1_full >= thres * test1]
   frac1B <- min(0.8, frac1 * length(cost1_full) / length(cost1B))
-  limit1 <- collapse::fquantile(cost1B, (1 - frac1B), names = FALSE)
+  limit1 <- quantile(cost1B, (1 - frac1B), names = FALSE)
   mark <- (cost1_full > limit1) & (cost1_full > 0.9 * test1)
 
   # --- Cost 2 Calculation (Window L2) ---
   ind21 <- 1:(lengdeArr - 6 * L2 + 1)
   cost2 <- abs(4 * xc[ind21 + 3 * L2] - xc[ind21] - xc[ind21 + L2] - xc[ind21 + 5 * L2] - xc[ind21 + 6 * L2])
-  limit2 <- collapse::fquantile(cost2, (1 - frac2), names = FALSE)
+  limit2 <- quantile(cost2, (1 - frac2), names = FALSE)
 
   mark2_core <- (cost2 > limit2)
   mark2 <- c(numeric(3 * L2 - 1), mark2_core, numeric(3 * L2))
@@ -258,11 +257,16 @@ filterMarkS4 <- function(x, kmin, L, L2, frac1, frac2, frac3, thres) {
     i_s <- 1:(lengdeArr - 3 * kmin + 1)
     shortAb <- abs(3 * (xc[i_s + 2 * kmin] - xc[i_s + kmin]) - (xc[i_s + 3 * kmin] - xc[i_s]))
 
-    test_s <- RcppRoll::roll_max(shortAb, n = 7, fill = 0, align = "center")
+    in1_s <- 1:(length(shortAb) - 6)
+    test_s_core <- pmax(
+      shortAb[in1_s], shortAb[in1_s + 1], shortAb[in1_s + 2],
+      shortAb[in1_s + 3], shortAb[in1_s + 4], shortAb[in1_s + 5], shortAb[in1_s + 6]
+    )
+    test_s <- c(rep(0, 3), test_s_core, rep(0, 3))
 
     cost1C <- shortAb[shortAb >= thres * test_s]
     frac1C <- min(0.8, frac3 * length(shortAb) / length(cost1C))
-    limit3 <- collapse::fquantile(cost1C, (1 - frac1C), names = FALSE)
+    limit3 <- quantile(cost1C, (1 - frac1C), names = FALSE)
 
     markH1 <- (shortAb > limit3) & (shortAb > thres * test_s)
 

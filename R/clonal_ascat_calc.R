@@ -148,64 +148,71 @@ get_psi_rho_from_ref_seg <- function(ref_seg, s, nA_ref, nB_ref, gamma_param = 1
 #' This function calculates a t variate.
 #' @noRd
 calc_standardised_error <- function(
-  LogR,
-  BAF_req,
-  BAF_length,
-  BAF_size,
-  BAF_mean,
-  BAF_sd,
-  rho,
-  psi,
-  gamma_param,
-  maxdist_BAF
+  LogR, BAF_req, BAF_length, BAF_size, BAF_mean, BAF_sd,
+  rho, psi, gamma_param, maxdist_BAF
 ) {
   # if we don't have a value for LogR, fill in 0
-  LogR <- ifelse(is.na(LogR), 0, LogR)
+  if (is.na(LogR)) {
+    LogR <- 0
+  }
 
-  # Pre-calculating the shared power term for clarity
-  scale_factor <- psi * 2^(LogR / gamma_param)
-  nMajor <- (rho - 1 + BAF_req * scale_factor) / rho
-  nMinor <- (rho - 1 + (1 - BAF_req) * scale_factor) / rho
+  # Pre-calculate shared terms
+  factor <- 2^(LogR / gamma_param)
+  term_psi <- ((1 - rho) * 2 + rho * psi)
 
-  # Floor at 0.01 (enforce "positive square")
-  nMajor <- pmax(0.01, nMajor)
-  nMinor <- pmax(0.01, nMinor)
+  nMajor <- (rho - 1 + BAF_req * factor * term_psi) / rho
+  nMinor <- (rho - 1 + (1 - BAF_req) * factor * term_psi) / rho
 
-  # We test 4 rounding combinations to see which matches BAF_req best
-  nMaj_opts <- list(floor(nMajor), ceiling(nMajor), floor(nMajor), ceiling(nMajor))
-  nMin_opts <- list(ceiling(nMinor), ceiling(nMinor), floor(nMinor), floor(nMinor))
+  # to make sure we're always in a positive square:
+  nMajor <- if (is.na(nMajor) || nMajor < 0) 0.01 else nMajor
+  nMinor <- if (is.na(nMinor) || nMinor < 0) 0.01 else nMinor
 
-  # Compute BAF levels for all 4 options (Vectorized)
-  BAF_levels <- lapply(1:4, function(k) {
-    denom <- (2 - 2 * rho + rho * (nMaj_opts[[k]] + nMin_opts[[k]]))
-    (1 - rho + rho * nMaj_opts[[k]]) / pmax(denom, 1e-10)
-  })
+  # note that these are sorted in the order of ascending BAF:
+  nMaj_opts <- c(floor(nMajor), ceiling(nMajor), floor(nMajor), ceiling(nMajor))
+  nMin_opts <- c(ceiling(nMinor), ceiling(nMinor), floor(nMinor), floor(nMinor))
+  x <- floor(nMinor)
+  y <- floor(nMajor)
+  ntot <- nMajor + nMinor
 
-  # Find the best option for each segment (Vectorized)
-  # diffs will be N x 4 matrix
-  diffs <- cbind(
-    abs(BAF_levels[[1]] - BAF_req),
-    abs(BAF_levels[[2]] - BAF_req),
-    abs(BAF_levels[[3]] - BAF_req),
-    abs(BAF_levels[[4]] - BAF_req)
-  )
+  # Calculate BAF levels and handle division by zero
+  denom <- (2 - 2 * rho + rho * (nMaj_opts + nMin_opts))
+  index_vect <- which(denom != 0)
 
-  # Tie-breaking logic (Handle the 0.5 case for each segment)
-  # This is usually for balanced regions.
-  # We use max.col to find the index of the minimum difference
-  best_idx <- max.col(-diffs, ties.method = "first")
+  nMaj_opts <- nMaj_opts[index_vect]
+  nMin_opts <- nMin_opts[index_vect]
+  BAF_levels <- (1 - rho + rho * nMaj_opts) / denom[index_vect]
 
-  # Extract the best mu values
-  # mu <- rep(0, length(BAF_req))
-  # for(k in 1:4) mu[best_idx == k] <- BAF_levels[[k]][best_idx == k]
-  # More R-idiomatic way:
-  mu <- vapply(seq_along(best_idx), function(i) BAF_levels[[best_idx[i]]][i], numeric(1))
+  whichclosestlevel <- which.min(abs(BAF_levels - BAF_req))
 
-  # Final t-variable calculation
-  is_valid <- (BAF_size > 0 & BAF_sd != 0)
-  tvar <- ifelse(is_valid, (BAF_mean - mu) * sqrt(BAF_size) / BAF_sd, 0)
+  # if 0.5 and there are multiple options, finetune
+  if (length(BAF_levels) >= 3) {
+    if (abs(BAF_levels[whichclosestlevel] - 0.5) < 1e-10 &&
+      abs(BAF_levels[2] - 0.5) < 1e-10 &&
+      abs(BAF_levels[3] - 0.5) < 1e-10) {
+      whichclosestlevel <- if (ntot > x + y + 1) 2 else 3
+    }
+  }
 
-  return(list(included_segment = as.numeric(is_valid), tvar = tvar))
+  mu <- BAF_levels[whichclosestlevel]
+  included_segment <- 0
+  tvar <- 0
+
+  if (BAF_size > 0) {
+    if (BAF_sd != 0 && length(mu) > 0) {
+      # Use the provided calc_Pvalue_t_twotailed logic if needed,
+      # but original used studentise
+      tvar <- studentise(BAF_size, BAF_mean, BAF_sd, mu)
+      included_segment <- 1
+    }
+  }
+
+  return(list(included_segment = included_segment, tvar = tvar))
+}
+
+#' Helper function to calculate a studentised t-variate
+#' @noRd
+studentise <- function(sample_size, sample_mean, sample_sd, mu) {
+  return((sample_mean - mu) * sqrt(sample_size) / sample_sd)
 }
 
 
@@ -234,11 +241,14 @@ recalc_psi_t <- function(psi, rho, gamma_param, lrrsegmented, segBAF_table, sigl
     BAF_size = s[, "size"],
     BAF_mean = s[, "mean"],
     BAF_sd = s[, "sd"],
+    read_depth = NA, # Unused legacy param
     rho = rho,
     psi = psi,
     gamma_param = gamma_param,
     siglevel_BAF = siglevel_BAF,
-    maxdist_BAF = maxdist_BAF
+    maxdist_BAF = maxdist_BAF,
+    siglevel_LogR = NA, # Unused legacy param
+    maxdist_LogR = NA # Unused legacy param
   )
 
   # Include this segment if we want to include all segments,

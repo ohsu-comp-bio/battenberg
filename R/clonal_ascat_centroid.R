@@ -24,128 +24,137 @@
 #' @return A list with fields optima_info_without_ref and optima_info
 #' @export
 find_centroid_of_global_minima <- function(
-  d, ref_seg_matrix,
-  ref_major, ref_minor,
-  s, dist_choice, minimise,
-  new_bounds, distancepng,
-  gamma_param, siglevel_BAF,
-  maxdist_BAF, siglevel_LogR,
-  maxdist_LogR, allow100percent,
-  uninformative_baf_threshold,
+  d, ref_seg_matrix, ref_major, ref_minor, s, dist_choice, minimise,
+  new_bounds, distancepng, gamma_param, siglevel_BAF, maxdist_BAF,
+  siglevel_LogR, maxdist_LogR, allow100percent, uninformative_baf_threshold,
   read_depth
 ) {
-  if (!minimise) d <- -d
+  if (!minimise) {
+    d <- -d # This ensures that we "maximise" instead of "minimise"!
+  }
 
-  # Get global minimum value and grid indices
-  gmin <- collapse::fmin(d)
-  optima_indices <- which(d == gmin, arr.ind = TRUE)
-  nropt <- nrow(optima_indices)
+  # Find height of global minima
+  gmin <- min(d, na.rm = TRUE)
 
-  # Pre-extract numeric grid values from row/col names
+  # Find all global minima
+  nropt <- 0
+  optima <- list()
+
+  # Pre-extract psi/rho values from grid
   psi_grid <- as.numeric(rownames(d))
   rho_grid <- as.numeric(colnames(d))
 
-  # Map indices to specific psi and rho values for all global optima
-  psis <- psi_grid[optima_indices[, 1]]
-  rhos <- rho_grid[optima_indices[, 2]]
+  for (i in 1:nrow(d)) {
+    for (j in 1:ncol(d)) {
+      if (!is.na(d[i, j]) && d[i, j] == gmin) {
+        psi <- psi_grid[i]
+        rho <- rho_grid[j]
 
-  # Pre-calculate segment-level constants
-  s_length <- s[, "length"]
-  s_r <- s[, "r"]
-  total_len <- sum(s_length)
+        # Calculate ploidy
+        term_base <- (rho - 1)
+        term_psi <- ((1 - rho) * 2 + rho * psi)
+        factor <- 2^(s[, "r"] / gamma_param)
 
-  # Calculate the segment-specific term: 2^(r / gamma)
-  s_term <- 2^(s_r / gamma_param)
+        nA <- (term_base - (s[, "b"] - 1) * factor * term_psi) / rho
+        nB <- (term_base + s[, "b"] * factor * term_psi) / rho
 
-  weighted_s_term <- collapse::fsum(s_term, w = s_length, na.rm = FALSE)
-  sum_s_length <- sum(s_length)
+        ploidy <- sum((nA + nB) * s[, "length"], na.rm = TRUE) / sum(s[, "length"])
 
-  # Calculate the specific ploidy for every global optimum in one vectorized step
-  rho_psi_term <- ((1 - rhos) * 2) + (rhos * psis)
-  ploidy_vector <- ((2 * rhos - 2) * sum_s_length + (weighted_s_term * rho_psi_term)) / (rhos * total_len)
+        # goodnessOfFit is the same as gmin in this implementation
+        goodnessOfFit <- gmin
 
-  # Using collapse::fmedian for C-based speed on the indices
-  centre <- c(
-    collapse::fmedian(optima_indices[, 1]),
-    collapse::fmedian(optima_indices[, 2])
-  )
+        nropt <- nropt + 1
+        optima[[nropt]] <- list(gmin = gmin, i = i, j = j, ploidy = ploidy, gof = goodnessOfFit)
+      }
+    }
+  }
 
-  # Calculate Euclidean distance to the centroid for all points
-  row_diffs <- optima_indices[, 1] - centre[1]
-  col_diffs <- optima_indices[, 2] - centre[2]
-  dists <- (row_diffs^2) + (col_diffs^2)
+  # Find a "centroid" of the set of global minima
+  grid_x_vect <- sapply(optima, function(z) z$i)
+  grid_y_vect <- sapply(optima, function(z) z$j)
 
-  best_idx <- which.min(dists)
+  centre_x <- median(grid_x_vect)
+  centre_y <- median(grid_y_vect)
+  centre <- c(centre_x, centre_y)
 
-  # Extract final optimized values
-  grid_x <- optima_indices[best_idx, 1]
-  grid_y <- optima_indices[best_idx, 2]
+  index <- 1
+  sqrdist_min <- Inf
+  for (i in 1:length(optima)) {
+    grid_point <- c(optima[[i]]$i, optima[[i]]$j)
+    sqrdist <- (grid_point[1] - centre[1])^2 + (grid_point[2] - centre[2])^2
 
-  # Format return values
+    if (sqrdist <= sqrdist_min) {
+      sqrdist_min <- sqrdist
+      index <- i
+    }
+  }
+
+  grid_x <- optima[[index]]$i
+  grid_y <- optima[[index]]$j
+
   psi_opt1 <- psi_grid[grid_x]
   rho_opt1 <- min(rho_grid[grid_y], 1)
-  ploidy_opt1 <- ploidy_vector[best_idx]
-  # Retrieve the reference segment index for the selected grid point
-  goodness_of_fit_opt1 <- if (minimise) gmin else -gmin
+  ploidy_opt1 <- optima[[index]]$ploidy
+  goodnessOfFit_opt1 <- optima[[index]]$gof
 
   ref_seg <- ref_seg_matrix[grid_x, grid_y]
+
+  if (minimise) {
+    dist_optima <- gmin
+  } else {
+    dist_optima <- -gmin
+    goodnessOfFit_opt1 <- -goodnessOfFit_opt1
+  }
+
+  # First optima set (without reference segment override)
   optima_info_without_ref <- list(
-    nropt = nropt,
-    psi_opt1 = psi_opt1,
-    rho_opt1 = rho_opt1,
-    ploidy_opt1 = ploidy_opt1,
-    ref_seg = ref_seg,
-    goodness_of_fit_opt1 = goodness_of_fit_opt1
+    nropt = nropt, psi_opt1 = psi_opt1, rho_opt1 = rho_opt1,
+    ploidy_opt1 = ploidy_opt1, ref_seg = ref_seg,
+    goodnessOfFit_opt1 = goodnessOfFit_opt1
   )
 
-  # Handle the logic for determining the final psi/rho based on reference segments
+  # Logic for reference segment override
   if (ref_seg == 0) {
     psi_opt1 <- 2
     rho_opt1 <- 1
     ploidy_opt1 <- 2
-    goodness_of_fit_opt1 <- 1
+    goodnessOfFit_opt1 <- 1
   } else {
     ref_segment_info <- get_psi_rho_from_ref_seg(
-      ref_seg, s,
-      ref_major[grid_x, grid_y],
-      ref_minor[grid_x, grid_y],
-      gamma_param
+      ref_seg, s, ref_major[grid_x, grid_y], ref_minor[grid_x, grid_y], gamma_param
     )
 
     psi_opt1 <- ref_segment_info$psi
     rho_opt1 <- ref_segment_info$rho
     ploidy_opt1 <- ref_segment_info$ploidy
 
-    # Recalculate goodness of fit if a valid rho was found
     if (!is.na(rho_opt1)) {
       distance_info <- calc_distance_clonal(
-        s, dist_choice, rho_opt1, psi_opt1, gamma_param,
-        read_depth, siglevel_BAF, maxdist_BAF,
-        siglevel_LogR, maxdist_LogR, uninformative_baf_threshold
+        s, dist_choice, rho_opt1, psi_opt1, gamma_param, read_depth,
+        siglevel_BAF, maxdist_BAF, siglevel_LogR, maxdist_LogR, uninformative_baf_threshold
       )
-      goodness_of_fit_opt1 <- distance_info$distance_value
+      goodnessOfFit_opt1 <- distance_info$distance_value
     } else {
-      goodness_of_fit_opt1 <- Inf
+      goodnessOfFit_opt1 <- Inf
     }
   }
 
-  # Generate the diagnostic sunrise plot if a file path is provided
+  # Final optima set
+  optima_info <- list(
+    nropt = nropt, psi_opt1 = psi_opt1, rho_opt1 = rho_opt1,
+    ploidy_opt1 = ploidy_opt1, ref_seg = ref_seg,
+    goodnessOfFit_opt1 = goodnessOfFit_opt1
+  )
+
+  # Plotting
   if (!is.na(distancepng)) {
+    rhos <- c(optima_info_without_ref$rho_opt1, rho_opt1)
+    psis <- c(optima_info_without_ref$psi_opt1, psi_opt1)
+
     grDevices::png(filename = distancepng, width = 1000, height = 1000, res = 1000 / 7, type = "cairo")
-    clonal_findcentroid_plot(minimise, dist_choice, -d, c(psi_opt1), c(rho_opt1), new_bounds)
+    clonal_findcentroid_plot(minimise, dist_choice, -d, psis, rhos, new_bounds)
     grDevices::dev.off()
   }
 
-  # Return the structured results containing both raw and reference-adjusted optima
-  return(list(
-    optima_info_without_ref = optima_info_without_ref,
-    optima_info = list(
-      nropt = nropt,
-      psi_opt1 = psi_opt1,
-      rho_opt1 = rho_opt1,
-      ploidy_opt1 = ploidy_opt1,
-      ref_seg = ref_seg,
-      goodness_of_fit_opt1 = goodness_of_fit_opt1
-    )
-  ))
+  return(list(optima_info_without_ref = optima_info_without_ref, optima_info = optima_info))
 }

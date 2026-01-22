@@ -9,14 +9,18 @@ concatenateImputeFiles <- function(inputStart, boundaries) {
   infiles <- paste0(inputStart, "_", boundaries[, 1] / 1000, "K_", boundaries[, 2] / 1000, "K.txt_haps")
 
   # Filter for existing files with data
-  # This uses vectorized checks instead of a for-loop
   existing_files <- infiles[file.exists(infiles) & file.info(infiles)$size > 0]
 
-  # Check if we actually have files to read
   if (length(existing_files) == 0) {
     return(NULL)
   }
-  result <- vroom::vroom(existing_files, delim = " ")
+  # Impute files (.haps) have no headers
+  result <- vroom::vroom(
+    existing_files,
+    delim = " ",
+    col_names = FALSE,
+    show_col_types = FALSE
+  )
   return(data.table::as.data.table(result))
 }
 
@@ -32,22 +36,17 @@ concatenateAlleleCountFiles <- function(inputStart, inputEnd, chr_names) {
   if (length(infiles) == 0) {
     return(data.frame())
   }
-  log_info("Using infiles in concatenateAlleleCountFiles: {infiles}")
+  log_info("Using {length(infiles)} infiles in concatenateAlleleCountFiles. Example: {infiles[1]}")
 
-  # Use rbindlist for the merge
-  # We read them as data.tables first (internal to rbindlist)
-  # then convert to data.frame at the very end.
-  combined <- data.table::rbindlist(
-    lapply(infiles, function(f) {
-      dt <- read_table_generic(f)
-      if (nrow(dt) == 0) {
-        log_failure("Allele count file is empty: {f}")
-      }
-      if (ncol(dt) < 6) {
-        log_failure("Allele count file has fewer than 6 columns: {f}")
-      }
-      return(dt)
-    })
+  # Bulk read using vroom for significant speedup
+  # Allele counter files typically have no header or start with '#' comments
+  combined <- vroom::vroom(
+    infiles,
+    delim = "\t",
+    col_names = c("CHR", "POS", "Count_A", "Count_C", "Count_G", "Count_T", "Good_depth"),
+    col_types = "ciiiiii",
+    comment = "#",
+    show_col_types = FALSE
   )
   data.table::setDF(combined)
   return(combined)
@@ -67,15 +66,15 @@ concatenateG1000SnpFiles <- function(inputStart, inputEnd, chr_names) {
     return(data.frame())
   }
 
-  # Read files into a named list
-  data_list <- lapply(existing_files, read_table_generic)
+  # Bulk read using vroom for speed
+  # Reference files have a header
+  combined <- vroom::vroom(
+    existing_files,
+    delim = "\t",
+    col_types = vroom::cols(.default = "c"),
+    show_col_types = FALSE
+  )
 
-  # idcol = "chromosome" prepends the list names (chr_names) as the first column
-  # This matches the original: cbind(chromosome=chrom, read_table_generic(filename))
-  combined <- data.table::rbindlist(data_list, idcol = "chromosome")
-
-  # Convert back to data.frame for index compatibility [[4]]
   data.table::setDF(combined)
-
   return(combined)
 }

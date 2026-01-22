@@ -65,44 +65,63 @@ GetChromosomeBAFs <- function(
   log_info("Reading SNP file: {SNP_file}")
   log_info("Reading haplotype file: {haplotypeFile}")
   log_info("Minimum counts: {minCounts} {class(minCounts)}")
-  # Load data with explicit column classes to prevent join type mismatches
-  # SNP_file (allele frequencies) columns: CHR, POS, A, C, G, T, DEPTH
+
+  # Load raw data without forcing types immediately
+  # Load raw data without forcing types immediately
   snp_dt <- data.table::fread(
     SNP_file,
     sep = "\t",
     header = FALSE,
-    skip = "#",
-    colClasses = list(character = 1, integer = 2:7)
+    colClasses = list(character = 1)
   )
-  # haplotypeFile (phasing) columns: V1..V5 are meta, V6..V7+ are haplotypes. V3 is position.
+
   phase_dt <- data.table::fread(
     haplotypeFile,
-    header = FALSE,
-    colClasses = list(integer = 3)
+    header = FALSE
   )
+  snp_pos_col_idx <- 2
 
-  # If header = FALSE was used but file had a header, the first row might contain NAs
-  # due to colClasses. We remove those rows.
-  snp_dt <- snp_dt[!is.na(snp_dt[[2]])]
-  phase_dt <- phase_dt[!is.na(phase_dt[[3]])]
+  # We assume the file HAS NO HEADER as per user feedback.
+  v2_is_num <- suppressWarnings(!is.na(as.numeric(snp_dt$V2[1])))
+  v3_is_num <- suppressWarnings(!is.na(as.numeric(snp_dt$V3[1])))
 
-  # FORCE conversion using character midway to break any factor/weird metadata bonds
-  # We use set() to be more robust than := in some parallel environments
-  data.table::set(snp_dt, j = "V2", value = as.integer(as.character(snp_dt[["V2"]])))
-  data.table::set(phase_dt, j = "V3", value = as.integer(as.character(phase_dt[["V3"]])))
+  if (!v2_is_num && v3_is_num) {
+    log_info("Detected ID/RSID/POS format. Using Column 3 as Position.")
+    snp_pos_col_idx <- 3
+  }
 
-  # Also force count columns to integer to avoid "non-numeric argument" errors later
-  for (col in paste0("V", 3:6)) {
+  # Convert the identified Position column to V2 (internal standard)
+  if (snp_pos_col_idx == 3) {
+    data.table::set(snp_dt, j = "V2", value = as.integer(as.numeric(snp_dt[[3]])))
+  } else {
+    # Standard V2 is Pos
+    suppressWarnings(
+      data.table::set(snp_dt, j = "V2", value = as.integer(as.numeric(snp_dt[[2]])))
+    )
+  }
+
+  # Ensure count columns (V3-V7) are integer if they look numeric
+  # This prevents "string" columns from breaking downstream math
+  for (col in paste0("V", 3:7)) {
     if (col %in% names(snp_dt)) {
-      data.table::set(snp_dt, j = col, value = as.integer(as.character(snp_dt[[col]])))
+      # Don't force if it's the Position column we just set (it's already int)
+      if (col == "V3" && snp_pos_col_idx == 3) next
+
+      val <- snp_dt[[col]]
+      if (is.numeric(val) || (is.character(val) && all(grepl("^[0-9]+$", na.omit(val))))) {
+        suppressWarnings(
+          data.table::set(snp_dt, j = col, value = as.integer(as.numeric(val)))
+        )
+      }
     }
   }
 
-  # Remove any rows that failed conversion
-  snp_dt <- snp_dt[!is.na(snp_dt[["V2"]])]
-  phase_dt <- phase_dt[!is.na(phase_dt[["V3"]])]
-
-  log_info("VERIFIED types - SNP V2: {class(snp_dt$V2)}, Phase V3: {class(phase_dt$V3)}, SNP V3: {class(snp_dt$V3)}")
+  # Phase: V3 (Pos) -> int
+  if ("V3" %in% names(phase_dt)) {
+    suppressWarnings(
+      data.table::set(phase_dt, j = "V3", value = as.integer(as.numeric(phase_dt[["V3"]])))
+    )
+  }
 
   if (nrow(snp_dt) == 0) {
     log_failure("SNP file is empty after filtering/type conversion: {SNP_file}")
@@ -111,8 +130,9 @@ GetChromosomeBAFs <- function(
     log_failure("Haplotype file is empty after filtering/type conversion: {haplotypeFile}")
   }
 
+  log_info("VERIFIED types - SNP V2: {class(snp_dt$V2)}, Phase V3: {class(phase_dt$V3)}")
+
   # Use [[ indexing to explicitly reference columns by name (strings)
-  # This avoids "no visible binding" warnings
   het_phase <- phase_dt[phase_dt[["V6"]] != phase_dt[["V7"]]]
 
   if (nrow(het_phase) == 0) {

@@ -7,7 +7,8 @@
 #' @noRd
 is_segment_clonal <- function(
   LogR, BAF_req, BAF_length, BAF_size, BAF_mean, BAF_sd,
-  rho, psi, gamma_param, siglevel_BAF, maxdist_BAF
+  read_depth, rho, psi, gamma_param, siglevel_BAF, maxdist_BAF,
+  siglevel_LogR, maxdist_LogR
 ) {
   # Handle NAs in LogR efficiently
   # If LogR is a vector, we modify it in place
@@ -56,9 +57,9 @@ is_segment_clonal <- function(
     nMajor = nMajor, nMinor = nMinor, full = TRUE
   )
 
-  # Columns: 1=nM1, 2=nm1, 3=nM2, 4=nm2
-  nMaj.test <- all.edges[, c(1, 3), drop = FALSE]
-  nMin.test <- all.edges[, c(2, 4), drop = FALSE]
+  # Columns follow the list format: nMaj[, 1] and nMaj[, 2] are the two states of the best edge
+  nMaj.test <- all.edges$nMaj
+  nMin.test <- all.edges$nMin
 
   # Calculate levels for both options (Option 1 and Option 2)
   calc_baf <- function(nM, nm) {
@@ -85,10 +86,10 @@ is_segment_clonal <- function(
   # P-value calculation
   # Handle BAF_sd == 0 case
   pval <- numeric(length(BAF_req))
-  valid_sd <- BAF_sd > 0
+  valid_sd <- !is.na(BAF_sd) & BAF_sd > 0
 
   if (any(valid_sd)) {
-    # Assuming calc_Pvalue_t_twotailed is vectorized
+    # Test segmented BAF value against theoretical copy number level
     pval[valid_sd] <- calc_Pvalue_t_twotailed(
       BAF_size[valid_sd], BAF_req[valid_sd],
       BAF_sd[valid_sd], best_level[valid_sd], maxdist_BAF
@@ -99,10 +100,14 @@ is_segment_clonal <- function(
   balanced <- (best_nMaj == best_nMin)
 
   # Clonal decision
+  # Explicitly handle NAs in pval to avoid propagating NAs to the is_clonal vector
   is_clonal <- (pval > siglevel_BAF)
+  is_clonal[is.na(is_clonal)] <- FALSE
 
   # Stability check (Vectorized)
   unstable <- (nMajor - nMajor.saved) >= 1
+  # Handle NAs in unstable check just in case
+  unstable[is.na(unstable)] <- TRUE
   is_clonal[unstable] <- FALSE
 
   return(list(

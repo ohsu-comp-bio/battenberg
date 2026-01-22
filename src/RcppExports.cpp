@@ -10,6 +10,22 @@ Rcpp::Rostream<true>&  Rcpp::Rcout = Rcpp::Rcpp_cout_get();
 Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
+// calculate_ascat_dist_matrix_cpp
+NumericVector calculate_ascat_dist_matrix_cpp(NumericVector s_b, NumericVector s_r, NumericVector s_len, NumericVector rho_vec, NumericVector psi_vec, double gamma_param);
+RcppExport SEXP _Battenberg_calculate_ascat_dist_matrix_cpp(SEXP s_bSEXP, SEXP s_rSEXP, SEXP s_lenSEXP, SEXP rho_vecSEXP, SEXP psi_vecSEXP, SEXP gamma_paramSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericVector >::type s_b(s_bSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type s_r(s_rSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type s_len(s_lenSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type rho_vec(rho_vecSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type psi_vec(psi_vecSEXP);
+    Rcpp::traits::input_parameter< double >::type gamma_param(gamma_paramSEXP);
+    rcpp_result_gen = Rcpp::wrap(calculate_ascat_dist_matrix_cpp(s_b, s_r, s_len, rho_vec, psi_vec, gamma_param));
+    return rcpp_result_gen;
+END_RCPP
+}
 // PottsCompact_cpp
 List PottsCompact_cpp(int kmin, double gamma, NumericVector nr, NumericVector res, NumericVector sq);
 RcppExport SEXP _Battenberg_PottsCompact_cpp(SEXP kminSEXP, SEXP gammaSEXP, SEXP nrSEXP, SEXP resSEXP, SEXP sqSEXP) {
@@ -68,6 +84,7 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
+    {"_Battenberg_calculate_ascat_dist_matrix_cpp", (DL_FUNC) &_Battenberg_calculate_ascat_dist_matrix_cpp, 6},
     {"_Battenberg_PottsCompact_cpp", (DL_FUNC) &_Battenberg_PottsCompact_cpp, 5},
     {"_Battenberg_exactPcf_cpp", (DL_FUNC) &_Battenberg_exactPcf_cpp, 3},
     {"_Battenberg_findEst_cpp", (DL_FUNC) &_Battenberg_findEst_cpp, 5},

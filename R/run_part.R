@@ -9,7 +9,7 @@
 #'
 #' @return A list of results from the applied function.
 #' @keywords internal
-run_parallel_or_serial <- function(iterator, func, libs) {
+run_with_error_handling <- function(iterator, func, libs, nthreads = 1) {
   if (length(iterator) == 0) {
     return(list())
   }
@@ -18,6 +18,10 @@ run_parallel_or_serial <- function(iterator, func, libs) {
   `%dopar%` <- foreach::`%dopar%`
 
   foreach::foreach(i = iterator) %dopar% {
+    # Set thread budget for this worker
+    data.table::setDTthreads(nthreads)
+    Sys.setenv(OMP_NUM_THREADS = nthreads, MKL_NUM_THREADS = nthreads, OPENBLAS_NUM_THREADS = nthreads)
+
     .libPaths(libs)
 
     # Wrap in calling handler to capture more context on failure

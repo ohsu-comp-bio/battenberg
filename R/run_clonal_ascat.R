@@ -83,8 +83,17 @@ run_clonal_ASCAT <- function(
   r <- lrrsegmented[names(bafsegmented)]
 
   s <- get_segment_info(lrrsegmented, segBAF_table)
-  # Make sure no segment of length 1 remains - TODO: this should not occur and needs to be prevented upstream
-  s <- s[s[, 3] > 1, ]
+
+  if (is.null(s) || nrow(s) == 0) {
+    log_failure("No valid segments found in run_clonal_ASCAT. Cannot proceed with clonal copy number fitting.")
+  }
+
+  # Make sure no segment of length 1 remains
+  s <- s[s[, 3] > 1, , drop = FALSE]
+  if (nrow(s) == 0) {
+    log_failure("No segments with length > 1 found in run_clonal_ASCAT.")
+  }
+
   dist_matrix_info <- create_distance_matrix_clonal(
     s, dist_choice, gamma_param, read_depth, siglevel_BAF, maxdist_BAF,
     siglevel_LogR, maxdist_LogR, uninformative_baf_threshold, new_bounds,
@@ -200,7 +209,8 @@ run_clonal_ASCAT <- function(
       n1all = nA, n2all = nB,
       heteroprobes = TRUE,
       ploidy = ploidy, rho = rho,
-      goodness_of_fit = goodness_of_fit, nonaberrant = FALSE,
+      goodnessOfFit = goodness_of_fit,
+      nonaberrant = FALSE,
       ch = ch, lrr = lrr,
       bafsegmented = bafsegmented,
       chrs = chr_names
@@ -219,7 +229,7 @@ run_clonal_ASCAT <- function(
     }
     ASCAT::ascat.plotNonRounded(
       ploidy = ploidy, rho = rho,
-      goodness_of_fit = goodness_of_fit,
+      goodnessOfFit = goodness_of_fit,
       nonaberrant = FALSE, nAfull = nAfull,
       nBfull = nBfull, bafsegmented = bafsegmented,
       ch = ch, lrr = lrr, chrs = chr_names
@@ -268,18 +278,22 @@ run_clonal_ASCAT <- function(
 #' @noRd
 get_segment_info <- function(segLogR, segBAF_table) {
   # Column 5: Segmented BAF (b), Column 4: Phased BAF (BAFke)
-  log_info("b_raw: {segBAF_table[[5]]}")
-  log_info("b_phased: {segBAF_table[[4]]}")
-  b_raw <- segBAF_table[[5]]
-  b_phased <- segBAF_table[[4]]
+  col_names <- names(segBAF_table)
 
+  # Determine BAF column
+  baf_col <- if ("BAFseg" %in% col_names) "BAFseg" else if ("BAF" %in% col_names) "BAF" else 5
+
+  # Determine Phased BAF column
+  phased_col <- if ("BAFphased" %in% col_names) "BAFphased" else 4
+
+  b_raw <- if (is.numeric(baf_col)) segBAF_table[, baf_col] else segBAF_table[[baf_col]]
+  b_phased <- if (is.numeric(phased_col)) segBAF_table[, phased_col] else segBAF_table[[phased_col]]
 
   # Match original make_segments(r, b) call
   pcf_segments <- make_segments(segLogR, b_raw)
 
   # To match 'which(segBAF_table[, 5] == BAF_req)' exactly:
   # We group by the BAF value itself, not the segment position.
-  # collapse::GRP is extremely fast for this.
   val_g <- collapse::GRP(b_raw)
 
   # Calculate stats for every unique BAF value once (O(N))
@@ -287,8 +301,7 @@ get_segment_info <- function(segLogR, segBAF_table) {
   all_sds <- as.numeric(collapse::fsd(b_phased, val_g))
   all_sizes <- as.numeric(collapse::fnobs(b_phased, val_g))
 
-  # Map the calculated stats to each segment by matching the segment's BAF
-  # value back to the group values.
+  # Map the calculated stats back to each segment
   match_idx <- match(pcf_segments[, "b"], val_g$groups)
 
   # Build final matrix
@@ -303,15 +316,16 @@ get_segment_info <- function(segLogR, segBAF_table) {
 }
 
 
-#' Optimized Segment Maker
+#' Optimized Segment Maker - Returns 3 columns like ASCAT original
+#' @noRd
 make_segments <- function(r, b) {
   # Fast removal of NAs
   keep <- which(!is.na(r) & !is.na(b))
 
   if (length(keep) == 0) {
     return(matrix(
-      nrow = 0, ncol = 6,
-      dimnames = list(NULL, c("r", "b", "length", "size", "mean", "sd"))
+      nrow = 0, ncol = 3,
+      dimnames = list(NULL, c("r", "b", "length"))
     ))
   }
 
@@ -319,28 +333,22 @@ make_segments <- function(r, b) {
   b_clean <- b[keep]
 
   # 1. Robust Grouping
-  # We round to 8 decimal places to avoid floating point noise breaking segments
-  ids <- data.table::rleid(round(r_clean, 8), round(b_clean, 8))
+  # We round to 4 decimal places to avoid floating point noise breaking segments
+  ids <- data.table::rleid(round(r_clean, 4), round(b_clean, 4))
 
   # 2. Ultra-fast Aggregation using collapse
-  # We use ffirst to get the segment values and fnobs/fmean/fsd for the stats
+  # We use ffirst to get the segment values and fnobs for the count
   # g = ids tells collapse to perform these operations by group in C
 
   # pre-allocate matrix for speed
   n_seg <- ids[length(ids)]
-  pcf_segments <- matrix(nrow = n_seg, ncol = 6)
-  colnames(pcf_segments) <- c("r", "b", "length", "size", "mean", "sd")
+  pcf_segments <- matrix(nrow = n_seg, ncol = 3)
+  colnames(pcf_segments) <- c("r", "b", "length")
 
-  # Populate columns
+  # Populate columns - ONLY r, b, length like ASCAT original
   pcf_segments[, "r"] <- collapse::ffirst(r_clean, g = ids)
   pcf_segments[, "b"] <- collapse::ffirst(b_clean, g = ids)
   pcf_segments[, "length"] <- as.numeric(collapse::fnobs(r_clean, g = ids))
-  pcf_segments[, "size"] <- pcf_segments[, "length"]
-  pcf_segments[, "mean"] <- as.numeric(collapse::fmean(b_clean, g = ids))
-
-  # Standard deviation requires a safety check for single-probe segments
-  sds <- collapse::fsd(b_clean, g = ids)
-  pcf_segments[, "sd"] <- ifelse(is.na(sds), 0, as.numeric(sds))
 
   return(pcf_segments)
 }

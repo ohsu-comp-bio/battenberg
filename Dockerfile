@@ -76,7 +76,8 @@ RUN make deps
 
 # 6. Copy the rest of the code and install the package
 COPY . .
-RUN make install
+RUN rm -rf src/*.o src/*.so
+RUN make compile && make docs && make install
 
 WORKDIR /home/ubuntu
 CMD ["/bin/bash"]

@@ -14,9 +14,7 @@
 read_table_generic <- function(file, header = TRUE, stringsAsFactor = FALSE, sep = "\t", chrom_col = 1, skip = 0) {
   # We use a named character vector to force the chromosome column(s) to character
   # This prevents loss of leading zeros or scientific notation issues
-  col_classes <- "character"
-  names(col_classes) <- as.character(chrom_col)
-  log_info("Reading read_table_generic from: {normalizePath(file, mustWork = FALSE)}")
+  col_classes <- list(character = chrom_col)
 
   # fread is the fastest modern parser for large genomic tables
   d <- data.table::fread(
@@ -26,10 +24,9 @@ read_table_generic <- function(file, header = TRUE, stringsAsFactor = FALSE, sep
     skip = skip,
     colClasses = col_classes,
     check.names = TRUE,
-    data.table = TRUE,
-    nThread = 4
+    data.table = TRUE
   )
-  log_info("Verified headers generic {paste(colnames(d), collapse = ', ')}")
+  log_info("Verified headers generic for {basename(file)}: {paste(colnames(d), collapse = ', ')}")
   return(d)
 }
 
@@ -45,7 +42,7 @@ read_logr <- function(filename, header = TRUE) {
     header = header,
     colClasses = c("character", "integer", "numeric")
   )
-  log_info("Verified headers read_logr {paste(colnames(dt), collapse = ', ')}")
+  log_info("Verified headers read_logr for {basename(filename)}: {paste(colnames(dt), collapse = ', ')}")
   return(dt)
 }
 
@@ -61,7 +58,7 @@ read_baf_as_data_frame <- function(filename, header = TRUE) {
     colClasses = c("character", "integer", "numeric")
   )
   data.table::setDF(output)
-  log_info("Verified headers read_baf_as_data_frame {paste(colnames(output), collapse = ', ')}")
+  log_info("Verified headers read_baf_as_data_frame for {basename(filename)}: {paste(colnames(output), collapse = ', ')}")
   return(output)
 }
 
@@ -79,7 +76,7 @@ read_gccontent <- function(filename) {
     fill = TRUE,
     select = 1:20
   )
-  log_info("Verified headers gccontent {paste(colnames(dt), collapse = ', ')}")
+  log_info("Verified headers gccontent for {basename(filename)}: {paste(colnames(dt), collapse = ', ')}")
   return(dt)
 }
 

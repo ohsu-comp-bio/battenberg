@@ -214,7 +214,8 @@ run_haplotyping <- function(
   use_previous_imputation = FALSE,
   snp6_reference_info_file = NA,
   heterozygous_filter = NA,
-  usebeagle = FALSE
+  usebeagle = FALSE,
+  allele_frequencies_dir = NA
 ) {
   # Point to the existing haplotype file in the external directory
   if (usebeagle) {
@@ -260,7 +261,10 @@ run_haplotyping <- function(
 
 
   # If an allele counts file exists we assume this is a WGS sample and run the corresponding step, otherwise it must be SNP6
-  allelefrequenciesfile <- paste0(tumourname, "_alleleFrequencies_chr", chrom, ".txt")
+  if (is.na(allele_frequencies_dir)) {
+    log_failure("allele_frequencies_dir must be provided to run_haplotyping")
+  }
+  allelefrequenciesfile <- file.path(allele_frequencies_dir, paste0(tumourname, "_alleleFrequencies_chr", chrom, ".txt"))
 
   if (file.exists(allelefrequenciesfile)) {
     # WGS - Transform the impute output into haplotyped BAFs

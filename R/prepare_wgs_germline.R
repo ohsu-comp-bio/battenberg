@@ -1147,6 +1147,7 @@ prepare_wgs_germline <- function(
   gccorrectprefix, repliccorrectprefix,
   min_base_qual, min_map_qual,
   allele_counts_dir, min_normal_depth,
+  nthreads = 1,
   libs
 ) {
   germline_prefix <- file.path(allele_counts_dir, germlinename)
@@ -1169,7 +1170,7 @@ prepare_wgs_germline <- function(
     chrom_names = chrom_names
   )
 
-  run_parallel_or_serial(
+  run_with_error_handling(
     iterator = seq_along(chrom_names),
     func = function(i) {
       germline_reconstruct_normal(
@@ -1189,7 +1190,7 @@ prepare_wgs_germline <- function(
         GAMMA_LOGR = gamma_logr,
         LENGTH_ADJACENT = length_adjacent
       )
-    }, libs
+    }, libs, nthreads = nthreads
   )
 
   if (length(list.files(pattern = "normal_alleleFrequencies")) == length(chrom_names)) {

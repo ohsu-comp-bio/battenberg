@@ -7,17 +7,14 @@
 #' @author sd11
 #' @noRd
 adjustSegmValues <- function(baf_chrom) {
-  if (nrow(baf_chrom) <= 1) {
-    baf_chrom$BAFseg <- baf_chrom$BAFphased
-    return(baf_chrom)
+  # Use original rle-based algorithm for exact equivalence with original Battenberg
+  segs <- rle(baf_chrom$BAFseg)
+  for (i in seq_along(segs$lengths)) {
+    end <- cumsum(segs$lengths[1:i])
+    end <- end[length(end)]
+    start <- (end - segs$lengths[i]) + 1
+    baf_chrom$BAFseg[start:end] <- median(baf_chrom$BAFphased[start:end])
   }
-  diffs <- collapse::fdiff(baf_chrom$BAFseg)
-  runs <- collapse::fcumsum(diffs != 0)
-  baf_chrom$BAFseg <- collapse::fmedian(
-    baf_chrom$BAFphased,
-    g = runs,
-    TRA = "replace"
-  )
   return(baf_chrom)
 }
 

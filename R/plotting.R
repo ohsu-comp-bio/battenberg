@@ -553,7 +553,6 @@ squaresplot <- function(tumourname, run_dir, segment_chr, segment_pos,
   q <- q + ggplot2::geom_point(ggplot2::aes(x = rlang::.data$nMajcalc, y = rlang::.data$nMincalc), size = 4, shape = 88)
   q <- q + ggplot2::labs(title = paste0(tumourname, " chr", subclone$chr, ": ", subclone$startpos, "-", subclone$endpos))
 
-  print(q)
   log_info("Plot 'q' generated.")
   grDevices::dev.off()
 }

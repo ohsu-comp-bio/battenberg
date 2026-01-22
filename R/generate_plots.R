@@ -49,7 +49,7 @@ generate_plots_battenberg <- function(
   ASCAT::ascat.plotAscatProfile(
     n1all = nA, n2all = nB, heteroprobes = TRUE,
     ploidy = ploidy_opt1, rho = rho_opt1,
-    goodness_of_fit = goodness_of_fit_opt1,
+    goodnessOfFit = goodness_of_fit_opt1,
     nonaberrant = FALSE, ch = ch, lrr = lrr, bafsegmented = bafsegmented,
     chrs = chr_names
   )
@@ -66,7 +66,7 @@ generate_plots_battenberg <- function(
   }
   ASCAT::ascat.plotNonRounded(
     ploidy = ploidy_opt1, rho = rho_opt1,
-    goodness_of_fit = goodness_of_fit_opt1,
+    goodnessOfFit = goodness_of_fit_opt1,
     nonaberrant = FALSE, nAfull = nAfull,
     nBfull = nBfull,
     bafsegmented = bafsegmented, ch = ch, lrr = lrr, chrs = chr_names

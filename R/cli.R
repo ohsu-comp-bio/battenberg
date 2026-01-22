@@ -16,6 +16,7 @@ battenberg_cli <- function() {
   options(show.error.messages = TRUE)
   options(keep.source = TRUE)
   options(width = 10000)
+  options(warn = 1) # Print warnings immediately
 
   option_list <- list(
     # Core Analysis & Sample Info
@@ -92,8 +93,13 @@ battenberg_cli <- function() {
     ),
 
     # Executables & Hardware
-    optparse::make_option(c("--nthreads"),
-      type = "integer", default = 8
+    optparse::make_option(c("--threads_per_chromosome"),
+      type = "integer", default = 8,
+      help = "Number of threads to use for each chromosome/sample task (Inner parallelism)"
+    ),
+    optparse::make_option(c("--chromosomes_in_parallel"),
+      type = "integer", default = 1,
+      help = "Number of chromosomes to process in parallel during phasing/haplotyping"
     ),
     optparse::make_option(c("--data_type"),
       type = "character", default = "wgs"
@@ -147,10 +153,10 @@ battenberg_cli <- function() {
     optparse::make_option(c("--enhanced_grid_search"),
       type = "logical", default = FALSE, action = "store_true"
     ),
-    optparse::make_option(c("--skip_preprocessing"),
-      type = "logical", default = FALSE, action = "store_true"
-    ),
     optparse::make_option(c("--preprocessed_data_dir"),
+      type = "character", default = NA
+    ),
+    optparse::make_option(c("--phasing_results_dir"),
       type = "character", default = NA
     ),
 

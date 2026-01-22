@@ -50,8 +50,8 @@ runASCAT <- function(
   # Adapt the rho/psi boundaries
   dist_min_psi <- max(min_ploidy - 0.6, 0)
   dist_max_psi <- max_ploidy + 0.6
-  dist_min_rho <- max(min_rho - 0.03, 0.05)
-  dist_max_rho <- max_rho + 0.03
+  dist_min_rho <- max(min_rho - 0.1, 0.05)
+  dist_max_rho <- max_rho + 0.1
 
   s <- make_segments(r, b)
   dist_matrix_info <- create_distance_matrix(
@@ -109,7 +109,7 @@ runASCAT <- function(
     weight_unbalanced <- sum(s[, "length"] * is_not_balanced)
 
     results <- apply(indices, 1, function(idx) {
-      dx[1]
+      i <- idx[1]
       j <- idx[2]
       m <- current_d[i, j]
       psi <- as.numeric(rownames(current_d)[i])
@@ -142,12 +142,37 @@ runASCAT <- function(
   opt_indices <- which(is_local_min, arr.ind = TRUE)
   candidates <- evaluate_candidates(opt_indices, d)
 
-  # Filtering based on standard Battenberg criteria
-  valid_optima <- Filter(function(x) {
-    x$ploidy >= min_ploidy && x$ploidy <= max_ploidy &&
-      x$rho >= min_rho && x$fit >= min_goodness &&
-      (x$pz > 0.01 || x$pza > 0.1)
-  }, candidates)
+  # Debug stats container
+  debug_stats <- list(
+    ploidy_bounds = 0,
+    rho_bounds = 0,
+    low_goodness = 0,
+    zero_constraint = 0
+  )
+
+  # Filtering based on standard Battenberg criteria with logging
+  valid_optima <- list()
+  if (!is.null(candidates)) {
+    valid_optima <- Filter(function(x) {
+      if (x$ploidy < min_ploidy || x$ploidy > max_ploidy) {
+        debug_stats$ploidy_bounds <<- debug_stats$ploidy_bounds + 1
+        return(FALSE)
+      }
+      if (x$rho < min_rho) {
+        debug_stats$rho_bounds <<- debug_stats$rho_bounds + 1
+        return(FALSE)
+      }
+      if (x$fit < min_goodness) {
+        debug_stats$low_goodness <<- debug_stats$low_goodness + 1
+        return(FALSE)
+      }
+      if (!(x$pz > 0.01 || x$pza > 0.1)) {
+        debug_stats$zero_constraint <<- debug_stats$zero_constraint + 1
+        return(FALSE)
+      }
+      return(TRUE)
+    }, candidates)
+  }
 
   # Second pass: If allow100percent is TRUE and no solutions found, relax constraints
   if (allow100percent && length(valid_optima) == 0) {
@@ -155,10 +180,11 @@ runASCAT <- function(
     cold_idx <- which(as.numeric(colnames(d)) > 1)
     d[, cold_idx] <- 1e20
 
+    # Reset debug stats for second pass (optional, or keep cumulative)
     # Re-evaluate all local minima with relaxed biological constraints
     valid_optima <- Filter(function(x) {
-      x$ploidy > min_ploidy && x$ploidy < max_ploidy &&
-        x$rho >= min_rho && x$fit >= min_goodness
+      return(x$ploidy > min_ploidy && x$ploidy < max_ploidy &&
+        x$rho >= min_rho && x$fit >= min_goodness)
     }, candidates)
   }
 
@@ -169,7 +195,7 @@ runASCAT <- function(
 
   if (nropt > 0) {
     data.table::fwrite(
-      paste(nropt, " copy number solutions found", sep = ""),
+      list(paste(nropt, " copy number solutions found", sep = "")),
       file = cnaStatusFile, quote = FALSE, col.names = FALSE, row.names = FALSE
     )
 
@@ -189,21 +215,19 @@ runASCAT <- function(
         rho_opt1_plot <- c(rho_opt1_plot, rho_opt1)
       }
     }
+
+    log_info("DEBUG: After filtering, {nropt} valid solutions remain")
+    log_info("DEBUG: Selected solution: rho={round(rho_opt1, 3)}, psi={round(psi_opt1, 3)}, ploidy={round(ploidy_opt1, 3)}, goodness={round(goodness_of_fit_opt1, 2)}%")
   } else {
     writeLines("no copy number solutions found", con = cnaStatusFile)
-    log_info("No suitable copy number solution found")
+    log_info("No suitable copy number solution found.")
+    log_info("Debug Rejection Stats: PloidyBounds={debug_stats$ploidy_bounds}, RhoBounds={debug_stats$rho_bounds}, LowGoodness={debug_stats$low_goodness}, ZeroConstraint={debug_stats$zero_constraint}")
     psi <- ploidy <- rho <- NA
     psi_opt1_plot <- rho_opt1_plot <- -1
   }
 
-  # Plotting Sunrise (if paired)
-  if (analysis == "paired") {
-    if (!is.na(distancepng)) {
-      grDevices::png(filename = distancepng, width = 1000, height = 1000, res = 1000 / 7, type = "cairo")
-      ASCAT::ascat.plotSunrise(-d, psi_opt1_plot, rho_opt1_plot, minimise)
-      grDevices::dev.off()
-    }
-  }
+  # Plotting Sunrise (if paired) - Delayed to run in parallel with other plots
+  # (Logic moved to plotting section below)
 
   # Final calculations for the best solution
   if (nropt > 0) {
@@ -212,59 +236,121 @@ runASCAT <- function(
     ploidy <- ploidy_opt1
 
     # Full genomic fit
-    nAfull <- (rho - 1 - (b - 1) * 2^(r / gamma) * ((1 - rho) * 2 + rho * psi)) / rho
-    nBfull <- (rho - 1 + b * 2^(r / gamma) * ((1 - rho) * 2 + rho * psi)) / rho
-    nA <- pmax(round(nAfull), 0)
-    nB <- pmax(round(nBfull), 0)
+    # Full genomic fit
+    # Optimized Back-transformation with data.table chunking
+    # This matches the enhanced version's logic for speed and memory efficiency
+    log_info("Starting back-transformation (Chunked execution, threads={nthreads})...")
 
-    # Reliability and back-transformation
-    rBT <- gamma * log((rho * (nA + nB) + (1 - rho) * 2) / ((1 - rho) * 2 + rho * psi), 2)
-    bBT <- (1 - rho + rho * nB) / (2 - 2 * rho + rho * (nA + nB))
+    indices <- seq_along(r)
+    num_chunks <- max(1, nthreads)
+    chunks <- parallel::splitIndices(length(indices), num_chunks)
+
+    results <- parallel::mclapply(chunks, function(idx) {
+      b_sub <- b[idx]
+      r_sub <- r[idx]
+
+      # Calculate mult locally
+      mult_sub <- 2^(r_sub / gamma) * ((1 - rho) * 2 + rho * psi)
+
+      nAfull_sub <- (rho - 1 - (b_sub - 1) * mult_sub) / rho
+      nBfull_sub <- (rho - 1 + b_sub * mult_sub) / rho
+      nA_sub <- pmax(round(nAfull_sub), 0)
+      nB_sub <- pmax(round(nBfull_sub), 0)
+
+      rBT_sub <- gamma * log(
+        (rho * (nA_sub + nB_sub) + (1 - rho) * 2) / ((1 - rho) * 2 + rho * psi),
+        2
+      )
+      bBT_sub <- (1 - rho + rho * nB_sub) / (2 - 2 * rho + rho * (nA_sub + nB_sub))
+
+      return(data.table::data.table(
+        segmentedBAF = b_sub, backTransformedBAF = bBT_sub, segmentedR = r_sub,
+        backTransformedR = rBT_sub, nA = nA_sub, nB = nB_sub, nAfull = nAfull_sub,
+        nBfull = nBfull_sub
+      ))
+    }, mc.cores = nthreads)
+
+    log_info("Aggregating results...")
+    final_dt <- data.table::rbindlist(results)
+
+    # Extract variables for standard plotting/usage downstream
+    nA <- final_dt$nA
+    nB <- final_dt$nB
+    nAfull <- final_dt$nAfull
+    nBfull <- final_dt$nBfull
+    rBT <- final_dt$backTransformedR
+    bBT <- final_dt$backTransformedBAF
 
     if (!is.na(reliabilityFile)) {
+      # Use threaded writing
       data.table::fwrite(
-        data.frame(
+        list(
           segmentedBAF = b, backTransformedBAF = bBT, segmentedR = r,
           backTransformedR = rBT, nA = nA, nB = nB, nAfull = nAfull,
           nBfull = nBfull
         ),
         reliabilityFile,
-        sep = ",", row.names = FALSE
+        sep = ",", row.names = FALSE,
+        nThread = nthreads
       )
     }
 
-    # Generate Profile Plots
+    # Generate Profile Plots in Parallel
+    plot_tasks <- list()
+
+    if (analysis == "paired" && !is.na(distancepng)) {
+      plot_tasks[["sunrise"]] <- function() {
+        # Recalculate res based on original logic (1000/7 approx 142.8)
+        grDevices::png(filename = distancepng, width = 1000, height = 1000, res = 1000 / 7, type = "cairo")
+        ASCAT::ascat.plotSunrise(-d, psi_opt1_plot, rho_opt1_plot, minimise)
+        grDevices::dev.off()
+      }
+    }
+
     if (!is.na(copynumberprofilespng)) {
-      grDevices::png(
-        filename = copynumberprofilespng,
-        width = 2000, height = 500,
-        res = 200, type = "cairo"
-      )
-      ASCAT::ascat.plotAscatProfile(
-        n1all = nA, n2all = nB, heteroprobes = TRUE,
-        ploidy = ploidy_opt1, rho = rho_opt1,
-        goodness_of_fit = goodness_of_fit_opt1,
-        nonaberrant = FALSE, ch = ch,
-        lrr = lrr, bafsegmented = bafsegmented,
-        chrs = chr_names
-      )
-      grDevices::dev.off()
+      plot_tasks[["profile"]] <- function() {
+        grDevices::png(
+          filename = copynumberprofilespng,
+          width = 2000, height = 500,
+          res = 200, type = "cairo"
+        )
+        ASCAT::ascat.plotAscatProfile(
+          n1all = nA, n2all = nB, heteroprobes = TRUE,
+          ploidy = ploidy_opt1, rho = rho_opt1,
+          goodnessOfFit = goodness_of_fit_opt1,
+          nonaberrant = FALSE, ch = ch,
+          lrr = lrr, bafsegmented = bafsegmented,
+          chrs = chr_names
+        )
+        grDevices::dev.off()
+      }
     }
 
     if (!is.na(nonroundedprofilepng)) {
-      grDevices::png(
-        filename = nonroundedprofilepng,
-        width = 2000, height = 500,
-        res = 200, type = "cairo"
-      )
-      ASCAT::ascat.plotNonRounded(
-        ploidy = ploidy_opt1, rho = rho_opt1,
-        goodness_of_fit = goodness_of_fit_opt1,
-        nonaberrant = FALSE, nAfull = nAfull,
-        nBfull = nBfull, bafsegmented = bafsegmented,
-        ch = ch, lrr = lrr, chrs = chr_names
-      )
-      grDevices::dev.off()
+      plot_tasks[["nonrounded"]] <- function() {
+        grDevices::png(
+          filename = nonroundedprofilepng,
+          width = 2000, height = 500,
+          res = 200, type = "cairo"
+        )
+        ASCAT::ascat.plotNonRounded(
+          ploidy = ploidy_opt1, rho = rho_opt1,
+          goodnessOfFit = goodness_of_fit_opt1,
+          nonaberrant = FALSE, nAfull = nAfull,
+          nBfull = nBfull, bafsegmented = bafsegmented,
+          ch = ch, lrr = lrr, chrs = chr_names
+        )
+        grDevices::dev.off()
+      }
+    }
+
+    if (length(plot_tasks) > 0) {
+      if (nthreads > 1 && length(plot_tasks) > 1) {
+        log_info("Generating plots in parallel (threads={min(nthreads, length(plot_tasks))})...")
+        parallel::mclapply(plot_tasks, function(f) f(), mc.cores = min(nthreads, length(plot_tasks)))
+      } else {
+        lapply(plot_tasks, function(f) f())
+      }
     }
   }
 
