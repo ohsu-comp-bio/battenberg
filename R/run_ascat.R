@@ -173,7 +173,7 @@ runASCAT <- function(
 
   # Log all candidates before filtering for debugging
   if (!is.null(candidates)) {
-    log_info("DEBUG: Found {length(candidates)} candidate solutions:")
+    log_info("Found {length(candidates)} candidate solutions:")
     for (i in seq_along(candidates)) {
       cand <- candidates[[i]]
       log_info("  Cand {i}: rho={round(cand$rho, 3)}, psi={round(cand$psi, 3)}, dist={round(cand$m, 4)}, goodness={round(cand$fit * 100, 2)}%, pz={round(cand$pz, 4)}, pza={round(cand$pza, 4)}")
@@ -185,26 +185,26 @@ runASCAT <- function(
   if (!is.null(candidates)) {
     valid_optima <- Filter(function(x) {
       if (x$ploidy < min_ploidy || x$ploidy > max_ploidy) {
-        log_info("  DEBUG: Rejected cand (rho={round(x$rho, 2)}) due to ploidy {round(x$ploidy, 2)} (bounds: {min_ploidy}-{max_ploidy})")
+        log_info("  Rejected cand (rho={round(x$rho, 2)}) due to ploidy {round(x$ploidy, 2)} (bounds: {min_ploidy}-{max_ploidy})")
         debug_stats$ploidy_bounds <<- debug_stats$ploidy_bounds + 1
         return(FALSE)
       }
       if (x$rho < min_rho) {
-        log_info("  DEBUG: Rejected cand (rho={round(x$rho, 2)}) due to rho < {min_rho}")
+        log_info("  Rejected cand (rho={round(x$rho, 2)}) due to rho < {min_rho}")
         debug_stats$rho_bounds <<- debug_stats$rho_bounds + 1
         return(FALSE)
       }
       if (x$fit < min_goodness) {
-        log_info("  DEBUG: Rejected cand (rho={round(x$rho, 2)}) due to goodness {round(x$fit * 100, 2)}% < {round(min_goodness * 100, 2)}%")
+        log_info("  Rejected cand (rho={round(x$rho, 2)}) due to goodness {round(x$fit * 100, 2)}% < {round(min_goodness * 100, 2)}%")
         debug_stats$low_goodness <<- debug_stats$low_goodness + 1
         return(FALSE)
       }
       if (!(x$pz > 0.01 || x$pza > 0.1)) {
-        log_info("  DEBUG: Rejected cand (rho={round(x$rho, 2)}) due to zero constraint (pz={round(x$pz, 3)}, pza={round(x$pza, 3)})")
+        log_info("  Rejected cand (rho={round(x$rho, 2)}) due to zero constraint (pz={round(x$pz, 3)}, pza={round(x$pza, 3)})")
         debug_stats$zero_constraint <<- debug_stats$zero_constraint + 1
         return(FALSE)
       }
-      log_info("  DEBUG: Accepted cand (rho={round(x$rho, 2)})")
+      log_info("  Accepted cand (rho={round(x$rho, 2)})")
       return(TRUE)
     }, candidates)
   }
@@ -270,8 +270,6 @@ runASCAT <- function(
     psi <- psi_opt1
     ploidy <- ploidy_opt1
 
-    # Full genomic fit
-    # Full genomic fit
     # Optimized Back-transformation with data.table chunking
     # This matches the enhanced version's logic for speed and memory efficiency
     log_info("Starting back-transformation (Chunked execution, threads={nthreads})...")
@@ -280,7 +278,7 @@ runASCAT <- function(
     num_chunks <- max(1, nthreads)
     chunks <- parallel::splitIndices(length(indices), num_chunks)
 
-    results <- parallel::mclapply(chunks, function(idx) {
+    results <- bt_mclapply(chunks, function(idx) {
       b_sub <- b[idx]
       r_sub <- r[idx]
 
@@ -330,6 +328,47 @@ runASCAT <- function(
       )
     }
 
+    # SMART DOWNSAMPLING for performance
+    log_info("Applying chromosome-aware smart downsampling to plotting data...")
+
+    target_total <- 500000
+    total_probes <- length(lrr)
+    lrr_list <- vector("list", length(ch))
+    baf_list <- vector("list", length(ch))
+    nA_list <- vector("list", length(ch))
+    nB_list <- vector("list", length(ch))
+    nAfull_list <- vector("list", length(ch))
+    nBfull_list <- vector("list", length(ch))
+    ch_ds <- vector("list", length(ch))
+    curr_pos <- 1
+
+    for (i in seq_along(ch)) {
+      idx <- ch[[i]]
+      if (length(idx) == 0) next
+      chr_target <- max(500, round(target_total * length(idx) / total_probes))
+      keep_rel <- bt_downsample_indices(lrr[idx], chr_target)
+      keep_abs <- idx[keep_rel]
+
+      lrr_list[[i]] <- lrr[keep_abs]
+      baf_list[[i]] <- bafsegmented[keep_abs]
+      nA_list[[i]] <- nA[keep_abs]
+      nB_list[[i]] <- nB[keep_abs]
+      nAfull_list[[i]] <- nAfull[keep_abs]
+      nBfull_list[[i]] <- nBfull[keep_abs]
+
+      new_len <- length(keep_abs)
+      ch_ds[[i]] <- seq(curr_pos, length.out = new_len)
+      curr_pos <- curr_pos + new_len
+    }
+
+    lrr_ds <- unlist(lrr_list)
+    bafsegmented_ds <- unlist(baf_list)
+    nA_ds <- unlist(nA_list)
+    nB_ds <- unlist(nB_list)
+    nAfull_ds <- unlist(nAfull_list)
+    nBfull_ds <- unlist(nBfull_list)
+    if (!is.null(names(ch))) names(ch_ds) <- names(ch)
+
     # Generate Profile Plots in Parallel
     plot_tasks <- list()
 
@@ -350,11 +389,11 @@ runASCAT <- function(
           res = 200, type = "cairo"
         )
         ASCAT::ascat.plotAscatProfile(
-          n1all = nA, n2all = nB, heteroprobes = TRUE,
+          n1all = nA_ds, n2all = nB_ds, heteroprobes = TRUE,
           ploidy = ploidy_opt1, rho = rho_opt1,
           goodnessOfFit = goodness_of_fit_opt1 * 100,
-          nonaberrant = FALSE, ch = ch,
-          lrr = lrr, bafsegmented = bafsegmented,
+          nonaberrant = FALSE, ch = ch_ds,
+          lrr = lrr_ds, bafsegmented = bafsegmented_ds,
           chrs = chr_names
         )
         grDevices::dev.off()
@@ -371,21 +410,17 @@ runASCAT <- function(
         ASCAT::ascat.plotNonRounded(
           ploidy = ploidy_opt1, rho = rho_opt1,
           goodnessOfFit = goodness_of_fit_opt1 * 100,
-          nonaberrant = FALSE, nAfull = nAfull,
-          nBfull = nBfull, bafsegmented = bafsegmented,
-          ch = ch, lrr = lrr, chrs = chr_names
+          nonaberrant = FALSE, nAfull = nAfull_ds,
+          nBfull = nBfull_ds, bafsegmented = bafsegmented_ds,
+          ch = ch_ds, lrr = lrr_ds, chrs = chr_names
         )
         grDevices::dev.off()
       }
     }
 
     if (length(plot_tasks) > 0) {
-      if (nthreads > 1 && length(plot_tasks) > 1) {
-        log_info("Generating plots in parallel (threads={min(nthreads, length(plot_tasks))})...")
-        parallel::mclapply(plot_tasks, function(f) f(), mc.cores = min(nthreads, length(plot_tasks)))
-      } else {
-        lapply(plot_tasks, function(f) f())
-      }
+      log_info("Generating {length(plot_tasks)} genome-wide plots sequentially...")
+      lapply(plot_tasks, function(f) f())
     }
   }
 

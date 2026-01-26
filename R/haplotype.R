@@ -64,10 +64,7 @@ GetChromosomeBAFs <- function(
 
   log_info("Reading SNP file: {SNP_file}")
   log_info("Reading haplotype file: {haplotypeFile}")
-  log_info("Minimum counts: {minCounts} {class(minCounts)}")
 
-  # Load raw data without forcing types immediately
-  # Load raw data without forcing types immediately
   snp_dt <- data.table::fread(
     SNP_file,
     sep = "\t",
@@ -129,8 +126,6 @@ GetChromosomeBAFs <- function(
   if (nrow(phase_dt) == 0) {
     log_failure("Haplotype file is empty after filtering/type conversion: {haplotypeFile}")
   }
-
-  log_info("VERIFIED types - SNP V2: {class(snp_dt$V2)}, Phase V3: {class(phase_dt$V3)}")
 
   # Use [[ indexing to explicitly reference columns by name (strings)
   het_phase <- phase_dt[phase_dt[["V6"]] != phase_dt[["V7"]]]

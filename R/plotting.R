@@ -199,7 +199,7 @@ create_bb_plot_average <- function(
   segment_states_min, segment_states_tot,
   chr_segs, chr_names, tumourname, ylim = 5
 ) {
-  print(paste("DEBUG: Executing refactored create_bb_plot_average with goodness:", goodness_of_fit))
+  log_debug(paste("Executing refactored create_bb_plot_average with goodness:", goodness_of_fit))
   # Plot main frame and title
   graphics::par(
     mar = c(0.5, 5, 5, 0.5), cex = 0.4, cex.main = 3, cex.axis = 2.5
@@ -236,9 +236,8 @@ create_bb_plot_average <- function(
   chrk_tot_len <- 0
   for (i in seq_along(chr_segs)) {
     chrk <- chr_segs[[i]]
-    chrk_hetero <- names(bafsegmented)[chrk]
     chrk_tot_len_prev <- chrk_tot_len
-    chrk_tot_len <- chrk_tot_len + length(chrk_hetero)
+    chrk_tot_len <- chrk_tot_len + length(chrk)
     vpos <- chrk_tot_len
     tpos <- (chrk_tot_len + chrk_tot_len_prev) / 2
     graphics::text(tpos, ylim, chr_names[i], pos = 1, cex = 2)
@@ -341,9 +340,8 @@ create_bb_plot_subclones <- function(
   chrk_tot_len <- 0
   for (i in seq_along(chr_segs)) {
     chrk <- chr_segs[[i]]
-    chrk_hetero <- names(bafsegmented)[chrk]
     chrk_tot_len_prev <- chrk_tot_len
-    chrk_tot_len <- chrk_tot_len + length(chrk_hetero)
+    chrk_tot_len <- chrk_tot_len + length(chrk)
     vpos <- chrk_tot_len
     tpos <- (chrk_tot_len + chrk_tot_len_prev) / 2
     graphics::text(tpos, ylim, chr_names[i], pos = 1, cex = 2)

@@ -393,9 +393,9 @@ call_subclones <- function(
   }
 
   # Positional indexing for generalizability: Col 3 = BAF, Col 5 = BAFseg
-  BAF <- BAFvals[, 3]
-  BAFseg <- BAFvals[, 5]
-  SNPpos <- BAFvals[, c(1, 2), drop = FALSE]
+  BAF <- BAFvals[[3]]
+  BAFseg <- BAFvals[[5]]
+  SNPpos <- BAFvals[, c(1, 2), with = FALSE]
 
   # Load LogR data and handle row-name artifacts
   LogRvals <- read_logr(logr_file)
@@ -505,50 +505,84 @@ call_subclones <- function(
     svs <- data.table::fread(prior_breakpoints_file, data.table = FALSE)
   }
 
-  parallel::mclapply(chr_names, function(chr) {
-    chr_idx <- SNPpos[, 1] == chr
-    pos <- SNPpos[chr_idx, 2]
+  # Pre-split data into chunks to avoid memory contention and parallel overhead
+  log_info("Preparing chromosome data chunks for plotting...")
+  b_chr_vec <- as.character(.subset2(BAFvals, 1))
+  baf_by_chr <- split(BAF, b_chr_vec)
+  bafseg_by_chr <- split(BAFseg, b_chr_vec)
+  bafpvals_by_chr <- split(BAFpvals, b_chr_vec)
+  pos_by_chr <- split(.subset2(SNPpos, 2), b_chr_vec)
 
-    if (length(pos) > 0) {
-      svs_pos <- if (has_prior) {
-        collapse::fsubset(
-          svs, svs[[1]] == chr
-        )[[2]] / 1e6
-      } else {
-        NULL
-      }
-      bp_chr <- collapse::fsubset(
-        segment_breakpoints, segment_breakpoints[[1]] == chr
-      )
-      breakpoints_pos <- sort(unique(c(bp_chr[[2]], bp_chr[[3]]) / 1e6))
+  l_chr_vec <- as.character(.subset2(LogRvals, 1))
+  l_pos <- .subset2(LogRvals, 2)
+  l_val <- .subset2(LogRvals, 3)
+  logr_pos_by_chr <- split(l_pos, l_chr_vec)
+  logr_val_by_chr <- split(l_val, l_chr_vec)
 
-      # Extract columns as vectors from data.table for this chromosome
-      logr_chr_mask <- .subset2(LogRvals, 1) == chr
-
-      grDevices::png(
-        filename = paste0(output_figures_prefix, chr, ".png"),
-        width = 2000, height = 2000, res = 200, type = "cairo"
-      )
-      create_subclonal_cn_plot(
-        chrom = chr,
-        chrom_position = pos / 1e6,
-        LogRposke = .subset2(LogRvals, 2)[logr_chr_mask],
-        LogRchr = .subset2(LogRvals, 3)[logr_chr_mask],
-        BAFchr = BAF[chr_idx],
-        BAFsegchr = BAFseg[chr_idx],
-        BAFpvalschr = BAFpvals[chr_idx],
-        subcloneres = subcloneres,
-        siglevel = siglevel,
-        x_min = min(pos) / 1e6,
-        x_max = max(pos) / 1e6,
-        title = paste(sample_name, ", chromosome ", chr),
-        xlab = "Position (Mb)", ylab_logr = "LogR", ylab_baf = "BAF (phased)",
-        breakpoints_pos = breakpoints_pos,
-        svs_pos = svs_pos
-      )
-      grDevices::dev.off()
+  log_info("Executing chromosomal plotting (sequentially for safety)...")
+  lapply(chr_names, function(chr) {
+    # Extract only the data for this chromosome
+    pos <- pos_by_chr[[chr]]
+    if (is.null(pos) || length(pos) == 0) {
+      log_info("PLOTTING: Skipping chromosome {chr} (no BAF data found for this name).")
+      return(NULL)
     }
-  }, mc.cores = nthreads)
+
+    # Optional prior breakpoints
+    svs_pos <- if (has_prior) {
+      chr_svs <- svs[svs[[1]] == chr, ]
+      if (nrow(chr_svs) > 0) chr_svs[[2]] / 1e6 else NULL
+    } else {
+      NULL
+    }
+
+    bp_chr <- segment_breakpoints[segment_breakpoints[[1]] == chr, ]
+    breakpoints_pos <- if (nrow(bp_chr) > 0) sort(unique(c(bp_chr[[2]], bp_chr[[3]]) / 1e6)) else NULL
+
+    logr_pos <- logr_pos_by_chr[[chr]]
+    logr_val <- logr_val_by_chr[[chr]]
+    baf_val <- baf_by_chr[[chr]]
+    baf_seg <- bafseg_by_chr[[chr]]
+    baf_pval <- bafpvals_by_chr[[chr]]
+
+    if (is.null(logr_pos)) {
+      log_info("PLOTTING: Warning - no LogR data found for chromosome {chr}. Plot may be incomplete.")
+    }
+
+    # Smart Downsampling Per Chromosome (Target: 15,000 points per plot)
+    max_points <- 15000
+    if (length(pos) > max_points) {
+      idx_sample <- bt_downsample_indices(pos, max_points)
+      pos <- pos[idx_sample]
+      baf_val <- baf_val[idx_sample]
+      baf_seg <- baf_seg[idx_sample]
+      baf_pval <- baf_pval[idx_sample]
+    }
+    if (!is.null(logr_pos) && length(logr_pos) > max_points) {
+      idx_sample_logr <- bt_downsample_indices(logr_val, max_points)
+      logr_pos <- logr_pos[idx_sample_logr]
+      logr_val <- logr_val[idx_sample_logr]
+    }
+
+    grDevices::png(
+      filename = paste0(output_figures_prefix, chr, ".png"),
+      width = 2000, height = 2000, res = 200, type = "cairo"
+    )
+    create_subclonal_cn_plot(
+      chrom = chr, chrom_position = pos / 1e6, LogRposke = logr_pos, LogRchr = logr_val,
+      BAFchr = baf_val, BAFsegchr = baf_seg, BAFpvalschr = baf_pval,
+      subcloneres = subcloneres, siglevel = siglevel,
+      x_min = min(pos) / 1e6, x_max = max(pos) / 1e6,
+      title = paste(sample_name, ", chromosome ", chr),
+      xlab = "Position (Mb)", ylab_logr = "LogR", ylab_baf = "BAF (phased)",
+      breakpoints_pos = breakpoints_pos, svs_pos = svs_pos
+    )
+    grDevices::dev.off()
+    return(NULL)
+  })
+
+  # Manual GC to prevent container shared memory buildup
+  gc(verbose = FALSE)
 
   # Clean up and calculate Ploidy
   subclones <- as.data.frame(subcloneres)
@@ -569,8 +603,17 @@ call_subclones <- function(
 
   if (is.na(ploidy) || ploidy <= 0) ploidy <- 2.0
 
-  # Final Outputs
-  plot_gw_subclonal_cn(subclones, BAFvals, rho, ploidy, goodness, output_gw_figures_prefix, chr_names, sample_name)
+  # Final Outputs - Downsample BAFvals for genome-wide plot performance
+  log_info("Downsampling BAFvals for genome-wide plotting...")
+  target_gw <- 500000
+  if (nrow(BAFvals) > target_gw) {
+    gw_idx <- bt_downsample_indices(BAFvals$Position, target_gw)
+    BAFvals_ds <- BAFvals[gw_idx, ]
+  } else {
+    BAFvals_ds <- BAFvals
+  }
+
+  plot_gw_subclonal_cn(subclones, BAFvals_ds, rho, ploidy, goodness, output_gw_figures_prefix, chr_names, sample_name)
 
   cp_out <- data.frame(purity = rho, ploidy = ploidy, psi = psit)
   log_info("Writing purity/ploidy for {sample_name}: rho={rho}, ploidy={ploidy}, psit={psit}")
@@ -942,32 +985,23 @@ plot_gw_subclonal_cn <- function(subclones, BAFvals, rho, ploidy, goodness,
 #' @author sd11
 #' @noRd
 collapse_bafsegmented_to_segments <- function(bafsegmented) {
-  stopifnot(all(c("Chromosome", "Position", "BAFseg") %in% colnames(bafsegmented)))
+  # Fast validation
+  req_cols <- c("Chromosome", "Position", "BAFseg")
+  if (!all(req_cols %in% colnames(bafsegmented))) {
+    stop("Missing required columns in BAFsegmented data")
+  }
 
-  segments_list <- bafsegmented |>
-    split(~Chromosome) |>
-    lapply(function(chrom_df) {
-      chrom_df <- chrom_df[order(chrom_df$Position), ]
-      rle_vals <- rle(chrom_df$BAFseg)
-      cum_lengths <- cumsum(rle_vals$lengths)
+  # Use data.table logic for extremely fast segment collapsing
+  # We group by Chromosome and then by the 'rleid' of the BAFseg value to identify blocks
+  # rleid identifies contiguous identical values which is exactly what a segment is.
+  dt <- if (data.table::is.data.table(bafsegmented)) bafsegmented else data.table::as.data.table(bafsegmented)
 
-      starts <- chrom_df$Position[c(1, cum_lengths[-length(cum_lengths)] + 1)]
-      ends <- chrom_df$Position[cum_lengths]
+  segments <- dt[, .(
+    start = .subset2(Position, 1),
+    end = .subset2(Position, .N)
+  ), by = .(Chromosome, seg_id = data.table::rleid(Chromosome, BAFseg))]
 
-      data.frame(
-        chromosome = chrom_df$Chromosome[1],
-        start = starts,
-        end = ends,
-        stringsAsFactors = FALSE
-      )
-    })
-
-  # Combine and clean up without transform()
-  segments <- do.call(rbind, segments_list)
-  segments$chromosome <- as.character(segments$chromosome)
-  rownames(segments) <- NULL
-
-  return(segments)
+  return(as.data.frame(segments[, .(chromosome = Chromosome, start, end)]))
 }
 
 #' Function to make additional figures
@@ -1394,7 +1428,7 @@ callChrXsubclones <- function(
     }
 
     grDevices::pdf(paste0(tumourname, "_chrX_average_ploidy.pdf"))
-    log_info(avg_plot)
+    print(avg_plot)
     log_info("Average ploidy plot generated for chrX.")
     grDevices::dev.off()
   } else {

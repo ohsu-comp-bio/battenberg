@@ -256,7 +256,6 @@ run_haplotyping <- function(
     if (!file.exists(haplotype_file)) {
       log_failure("Expected haplotype file not found: {haplotype_file}")
     }
-    log_info("Using existing haplotype file: {haplotype_file}")
   }
 
 
@@ -400,7 +399,6 @@ run_haplotyping_germline <- function(
     if (!file.exists(haplotype_file)) {
       log_failure("Expected haplotype file not found: {haplotype_file}")
     }
-    log_info("Using existing haplotype file: {haplotype_file}")
   }
 
   allelefrequenciesfile <- paste0(germlinename, "_alleleFrequencies_chr", chrom, ".txt")

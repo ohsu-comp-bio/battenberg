@@ -97,7 +97,7 @@ run_clonal_ASCAT <- function(
   }
 
   # Make sure no segment of length 1 remains
-  s <- s[s[, 3] > 1, , drop = FALSE]
+  s <- s[s[, "length"] > 1, , drop = FALSE]
   log_debug("After filtering length > 1: {nrow(s)} rows")
   if (nrow(s) == 0) {
     log_failure("No segments with length > 1 found in run_clonal_ASCAT.")
@@ -213,51 +213,97 @@ run_clonal_ASCAT <- function(
       )
     }
 
-    # Make plots
-    if (!is.na(copynumberprofilespng)) {
-      grDevices::png(
-        filename = copynumberprofilespng,
-        width = 2000, height = 500,
-        res = 200, type = "cairo"
-      )
-    }
-    ASCAT::ascat.plotAscatProfile(
-      n1all = nA, n2all = nB,
-      heteroprobes = TRUE,
-      ploidy = ploidy, rho = rho,
-      goodnessOfFit = goodness_of_fit * 100,
-      nonaberrant = FALSE,
-      ch = ch, lrr = lrr,
-      bafsegmented = bafsegmented,
-      chrs = chr_names
-    )
-    if (!is.na(copynumberprofilespng)) {
-      grDevices::dev.off()
+    # SMART DOWNSAMPLING for performance
+    log_info("Applying chromosome-aware smart downsampling to plotting data...")
+    target_total <- 500000
+    total_probes <- length(lrr)
+    lrr_list <- vector("list", length(ch))
+    baf_list <- vector("list", length(ch))
+    nA_list <- vector("list", length(ch))
+    nB_list <- vector("list", length(ch))
+    nAfull_list <- vector("list", length(ch))
+    nBfull_list <- vector("list", length(ch))
+    ch_ds <- vector("list", length(ch))
+    curr_pos <- 1
+
+    for (i in seq_along(ch)) {
+      idx <- ch[[i]]
+      if (length(idx) == 0) next
+      chr_target <- max(500, round(target_total * length(idx) / total_probes))
+      keep_rel <- bt_downsample_indices(lrr[idx], chr_target)
+      keep_abs <- idx[keep_rel]
+
+      lrr_list[[i]] <- lrr[keep_abs]
+      baf_list[[i]] <- bafsegmented[keep_abs]
+      nA_list[[i]] <- nA[keep_abs]
+      nB_list[[i]] <- nB[keep_abs]
+      nAfull_list[[i]] <- nAfull[keep_abs]
+      nBfull_list[[i]] <- nBfull[keep_abs]
+
+      new_len <- length(keep_abs)
+      ch_ds[[i]] <- seq(curr_pos, length.out = new_len)
+      curr_pos <- curr_pos + new_len
     }
 
-    # separated plotting from logic: create nonrounded copy number profile plot here
-    if (!is.na(nonroundedprofilepng)) {
-      grDevices::png(
-        filename = nonroundedprofilepng,
-        width = 2000, height = 500,
-        res = 200, type = "cairo"
-      )
+    lrr_ds <- unlist(lrr_list)
+    bafsegmented_ds <- unlist(baf_list)
+    nA_ds <- unlist(nA_list)
+    nB_ds <- unlist(nB_list)
+    nAfull_ds <- unlist(nAfull_list)
+    nBfull_ds <- unlist(nBfull_list)
+    if (!is.null(names(ch))) names(ch_ds) <- names(ch)
+
+    # Make plots in parallel if requested
+    plot_tasks <- list()
+
+    if (!is.na(copynumberprofilespng)) {
+      plot_tasks[["profile"]] <- function() {
+        grDevices::png(
+          filename = copynumberprofilespng,
+          width = 2000, height = 500,
+          res = 200, type = "cairo"
+        )
+        ASCAT::ascat.plotAscatProfile(
+          n1all = nA_ds, n2all = nB_ds,
+          heteroprobes = TRUE,
+          ploidy = ploidy, rho = rho,
+          goodnessOfFit = goodness_of_fit * 100,
+          nonaberrant = FALSE,
+          ch = ch_ds, lrr = lrr_ds,
+          bafsegmented = bafsegmented_ds,
+          chrs = chr_names
+        )
+        grDevices::dev.off()
+      }
     }
-    ASCAT::ascat.plotNonRounded(
-      ploidy = ploidy, rho = rho,
-      goodnessOfFit = goodness_of_fit * 100,
-      nonaberrant = FALSE, nAfull = nAfull,
-      nBfull = nBfull, bafsegmented = bafsegmented,
-      ch = ch, lrr = lrr, chrs = chr_names
-    )
+
     if (!is.na(nonroundedprofilepng)) {
-      grDevices::dev.off()
+      plot_tasks[["nonrounded"]] <- function() {
+        grDevices::png(
+          filename = nonroundedprofilepng,
+          width = 2000, height = 500,
+          res = 200, type = "cairo"
+        )
+        ASCAT::ascat.plotNonRounded(
+          ploidy = ploidy, rho = rho,
+          goodnessOfFit = goodness_of_fit * 100,
+          nonaberrant = FALSE, nAfull = nAfull_ds,
+          nBfull = nBfull_ds, bafsegmented = bafsegmented_ds,
+          ch = ch_ds, lrr = lrr_ds, chrs = chr_names
+        )
+        grDevices::dev.off()
+      }
+    }
+
+    if (length(plot_tasks) > 0) {
+      log_info("Generating {length(plot_tasks)} genome-wide plots sequentially to ensure container stability...")
+      lapply(plot_tasks, function(f) f())
     }
   }
 
   # Recalculate the psi_t for this rho using only clonal segments
   psi_t <- recalc_psi_t(
-    psi_without_ref, rho_without_ref, gamma_param, lrrsegmented, segBAF_table,
+    psi_without_ref, rho_without_ref, gamma_param, r, segBAF_table,
     siglevel_BAF, maxdist_BAF,
     include_subcl_segments = FALSE
   )
@@ -294,52 +340,50 @@ run_clonal_ASCAT <- function(
 #' standard deviation of the BAF values
 #' @noRd
 get_segment_info <- function(segLogR, segBAF_table) {
-  # Column 5: Segmented BAF (b), Column 4: Phased BAF (BAFke)
+  # Column names for robust access
   col_names <- names(segBAF_table)
-
-  # Identify BAF columns: Segmented BAF is typically col 5.
-  # If col_names is available, we look for "BAFseg" or just use col 5 since fit_copy_number renamed it.
   baf_col <- if ("BAFseg" %in% col_names) "BAFseg" else 5
   phased_col <- if ("BAFphased" %in% col_names) "BAFphased" else 4
 
-  b_raw <- segBAF_table[[baf_col]]
-  b_phased <- segBAF_table[[phased_col]]
+  b_raw_full <- segBAF_table[[baf_col]]
+  b_phased_full <- segBAF_table[[phased_col]]
 
-  if (length(segLogR) != length(b_raw)) {
-    log_failure("Input length mismatch in get_segment_info: segLogR={length(segLogR)}, b_raw={length(b_raw)}")
-    stop("Input length mismatch in get_segment_info")
+  # 1. Consensus filtering: ensures r, b, and phased BAF are aligned and non-NA
+  # This matches the internal logic of make_segments for consistency
+  valid_mask <- !is.na(segLogR) & !is.na(b_raw_full)
+  r <- segLogR[valid_mask]
+  b <- b_raw_full[valid_mask]
+  bp <- b_phased_full[valid_mask]
+
+  if (length(r) == 0) {
+    return(matrix(0, 0, 7))
   }
 
-  # Match original make_segments(r, b) call - NO ROUNDING
-  pcf_segments <- make_segments(segLogR, b_raw)
+  # 2. Identify contiguous segments using Run-Length Encoding ID
+  # This is the defining logic of a segment: contiguous regions with same values
+  seg_id <- data.table::rleid(r, b)
 
-  # To match 'which(segBAF_table[, 5] == BAF_req)' exactly:
-  # We group by the BAF value itself, not the segment position.
-  val_g <- collapse::GRP(b_raw)
+  # 3. Aggregate stats per segment
+  # This avoids any indexing mismatch errors and handles the matrix creation in one pass
+  dt <- data.table::data.table(r = r, b = b, bp = bp, seg_id = seg_id)
 
-  # Calculate stats for every unique BAF value once (O(N))
-  all_means <- as.numeric(collapse::fmean(b_phased, val_g))
-  all_sds <- as.numeric(collapse::fsd(b_phased, val_g))
-  all_sizes <- as.numeric(collapse::fnobs(b_phased, val_g))
+  # We need 7 columns: r, b, length, length.1, size, mean, sd
+  # Battenberg legacy format repeats length/size columns
+  stats_dt <- dt[, .(
+    r = .subset2(r, 1),
+    b = .subset2(b, 1),
+    len1 = .N,
+    len2 = .N,
+    size = .N,
+    mean_bp = mean(bp, na.rm = TRUE),
+    sd_bp = sd(bp, na.rm = TRUE)
+  ), by = seg_id]
 
-  # Map the calculated stats back to each segment using start indices (O(1) mapping, no float matching)
-  # Calculate cumulative lengths to find the start of each segment in the original vector
-  cum_len <- cumsum(pcf_segments[, "length"])
-  starts <- c(1, head(cum_len, -1) + 1)
+  # 4. Return as matrix with exact column names expected by Battenberg
+  res <- as.matrix(stats_dt[, .(r, b, len1, len2, size, mean_bp, sd_bp)])
+  colnames(res) <- c("r", "b", "length", "length.1", "size", "mean", "sd")
 
-  # val_g$group.id contains the group ID for every probe.
-  # Since pcf_segments were created from the same b_raw, we just pick the group_id at the start of each segment.
-  match_idx <- val_g$group.id[starts]
-
-  # Build final matrix
-  segs <- cbind(
-    pcf_segments,
-    size = all_sizes[match_idx],
-    mean = all_means[match_idx],
-    sd   = all_sds[match_idx]
-  )
-
-  return(segs)
+  return(res)
 }
 
 

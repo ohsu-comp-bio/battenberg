@@ -17,7 +17,6 @@ runASCAT_enhanced <- function(
   local_min_window_size = 7, nthreads = 1
 ) {
   start_time <- Sys.time()
-  log_info("BATTENBERG ASCAT ENHANCED - VERSION CHECK: FAILSAVE & SD-FIX APPLIED !!!")
 
   # 0. Input Validation
   if (missing(lrr) || missing(baf) || missing(lrrsegmented) || missing(bafsegmented)) {
@@ -87,7 +86,7 @@ runASCAT_enhanced <- function(
   log_debug("Distance matrix dimensions: {nrow(d)} x: {ncol(d)}")
   log_debug("Theoretical Max Distance: {round(TheoretMaxdist, 4)}")
 
-  log_info("DEBUG: Distance matrix stats: min={min(d, na.rm=TRUE)}, max={max(d, na.rm=TRUE)}, mean={mean(d, na.rm=TRUE)}")
+  log_info("Distance matrix stats: min={min(d, na.rm=TRUE)}, max={max(d, na.rm=TRUE)}, mean={mean(d, na.rm=TRUE)}")
   # We handle minimization/maximization explicitly in the search functions.
 
   # 3. Pre-compute Search Parameters
@@ -114,14 +113,14 @@ runASCAT_enhanced <- function(
   if (!is.null(n_neighbors_search)) {
     if (verbose) {
       if (is.infinite(n_neighbors_search)) {
-        log_info("SEARCH MODE: Exhaustive search (all grid points)")
+        log_info("Search Mode: Exhaustive search (all grid points)")
       } else {
-        log_info("SEARCH MODE: Top {n_neighbors_search} neighbors by distance")
+        log_info("Search Mode: Top {n_neighbors_search} neighbors by distance")
       }
     }
     is_local_min[row_range, col_range] <- TRUE
   } else {
-    if (verbose) log_info("SEARCH MODE: Local minima only (window size: {local_min_window_size})")
+    if (verbose) log_info("Search Mode: Local minima only (window size: {local_min_window_size})")
     is_local_min[row_range, col_range] <- TRUE
     for (dx in -half_window:half_window) {
       for (dy in -half_window:half_window) {
@@ -160,12 +159,12 @@ runASCAT_enhanced <- function(
     }
   }
 
-  # DEBUG: Log how many local minima detected by each method
+  # Log how many local minima detected by each method
   num_vectorized_minima <- sum(is_local_min, na.rm = TRUE)
-  log_info("DEBUG: Vectorized detection found {num_vectorized_minima} local minima")
-  log_info("DEBUG: Smart search order returns {total_points_in_grid} points")
+  log_info("Vectorized detection found {num_vectorized_minima} local minima")
+  log_info("Smart search order returns {total_points_in_grid} points")
 
-  # DEBUG: Check specific grid point (psi=4.45, rho=0.74) if it exists
+  # Check specific grid point (psi=4.45, rho=0.74) if it exists
   target_psi <- 4.45
   target_rho <- 0.74
   psi_idx <- which.min(abs(psi_values - target_psi))
@@ -174,18 +173,6 @@ runASCAT_enhanced <- function(
     actual_psi <- psi_values[psi_idx]
     actual_rho <- rho_values[rho_idx]
 
-    # Calculate goodness at this point
-    test_solution <- calculate_solution_fast(
-      psi_values[psi_idx], rho_values[rho_idx], s_b, s_r, s_length, total_length, gamma,
-      min_ploidy, max_ploidy, min_rho, max_rho,
-      min_goodness, d[psi_idx, rho_idx], TheoretMaxdist, minimise, allow100percent,
-      baf_mask = baf_mask, denom_abb = denom_abb
-    )
-    if (test_solution$valid) {
-      log_info("DEBUG TARGET POINT: Solution VALID - ploidy={round(test_solution$ploidy, 3)}, goodness={round(test_solution$goodness, 4)}")
-    } else {
-      log_info("DEBUG TARGET POINT: Solution REJECTED - reason={test_solution$reason}, goodness={round(test_solution$goodness, 4)}")
-    }
 
     # Show window to see why it's not a local min
     if (psi_idx >= (half_window + 1) && psi_idx <= (nr - half_window) &&
@@ -196,8 +183,6 @@ runASCAT_enhanced <- function(
       ]
       center_val <- d[psi_idx, rho_idx]
       min_neighbor <- min(window_vals[window_vals != center_val], na.rm = TRUE)
-      log_info("DEBUG TARGET POINT: Center value={round(center_val, 2)}, Min neighbor={round(min_neighbor, 2)}")
-      log_info("DEBUG TARGET POINT: Local min check: min_neighbor > center? {min_neighbor > center_val}")
     }
   }
 
@@ -233,7 +218,7 @@ runASCAT_enhanced <- function(
       max_sim <- max(d, na.rm = TRUE)
       max_sim / TheoretMaxdist
     }
-    log_info("DEBUG START SEARCH: Optimal Grid Value={if(minimise) min(d, na.rm=TRUE) else max(d, na.rm=TRUE)}, Max Possible Goodness={round(max_poss_goodness * 100, 2)}% (Threshold: {round(min_goodness * 100, 2)}%)")
+    log_info("Start Search: Optimal Grid Value={if(minimise) min(d, na.rm=TRUE) else max(d, na.rm=TRUE)}, Max Possible Goodness={round(max_poss_goodness * 100, 2)}% (Threshold: {round(min_goodness * 100, 2)}%)")
 
     if (verbose) log_info("Starting grid search over {total_points_in_grid} points...")
     for (idx in seq_len(total_points_in_grid)) {
@@ -457,7 +442,7 @@ runASCAT_enhanced <- function(
     ploidy <- ploidy_opt1
 
     # 7. Final Back-transformation
-    log_info("Debug Backtransform: rho={rho}, psi={psi}, length(logR_segmented)={length(logR_segmented)}, class={class(logR_segmented)}, gamma={gamma}")
+    log_info("Backtransform: rho={rho}, psi={psi}, length(logR_segmented)={length(logR_segmented)}, class={class(logR_segmented)}, gamma={gamma}")
     if (!is.numeric(logR_segmented)) {
       log_failure("CRITICAL: logR_segmented corrupted. Value: {paste(head(logR_segmented), collapse=', ')}")
     }
@@ -471,7 +456,7 @@ runASCAT_enhanced <- function(
     num_chunks <- max(1, nthreads)
     chunks <- parallel::splitIndices(length(indices), num_chunks)
 
-    results <- parallel::mclapply(chunks, function(idx) {
+    results <- bt_mclapply(chunks, function(idx) {
       # Extract subset
       r_sub <- logR_segmented[idx]
       b_sub <- b[idx]
@@ -553,22 +538,7 @@ runASCAT_enhanced <- function(
     plot_tasks <- list()
 
     # SMART DOWNSAMPLING for performance
-    # Target ~100k points across the whole genome
-    # We downsample each chromosome to preserve original indexing mapping in 'ch'
     log_info("Applying chromosome-aware smart downsampling to plotting data...")
-
-    # helper to find min/max indices in a vector segment
-    get_keep_indices <- function(v, target) {
-      n <- length(v)
-      if (n <= target) {
-        return(seq_along(v))
-      }
-      bin_size <- ceiling(n / (target / 2))
-      dt_ds <- data.table::data.table(val = as.numeric(v), id = seq_along(v))
-      dt_ds[, bin := ceiling(id / bin_size)]
-      keep <- dt_ds[, .(id_min = id[which.min(val)], id_max = id[which.max(val)]), by = bin]
-      return(sort(unique(c(keep$id_min, keep$id_max))))
-    }
 
     target_total <- 500000
     total_probes <- length(lrr)
@@ -593,7 +563,7 @@ runASCAT_enhanced <- function(
       chr_target <- max(500, round(target_total * length(idx) / total_probes))
 
       # Relies on data.table for speed
-      keep_rel <- get_keep_indices(lrr[idx], chr_target)
+      keep_rel <- bt_downsample_indices(lrr[idx], chr_target)
       keep_abs <- idx[keep_rel]
 
       lrr_list[[i]] <- lrr[keep_abs]
@@ -622,11 +592,11 @@ runASCAT_enhanced <- function(
 
     if (analysis == "paired" && !is.na(distancepng)) {
       plot_tasks[["sunrise"]] <- function() {
-        log_info("SUNRISE: Starting calculation for {distancepng}...")
-        log_info("SUNRISE DEBUG: d matrix stats - min={min(d, na.rm=TRUE)}, max={max(d, na.rm=TRUE)}, NA_count={sum(is.na(d))}")
-        log_info("SUNRISE DEBUG: psi_opt1_plot length={length(psi_opt1_plot)}, rho_opt1_plot length={length(rho_opt1_plot)}")
+        log_info("Sunrise Plot: Starting calculation for {distancepng}...")
+        log_info("Sunrise Plot: d matrix stats - min={min(d, na.rm=TRUE)}, max={max(d, na.rm=TRUE)}, NA_count={sum(is.na(d))}")
+        log_info("Sunrise Plot: psi_opt1_plot length={length(psi_opt1_plot)}, rho_opt1_plot length={length(rho_opt1_plot)}")
         if (length(psi_opt1_plot) > 0) {
-          log_info("SUNRISE DEBUG: first sol: rho={rho_opt1_plot[1]}, psi={psi_opt1_plot[1]}")
+          log_info("Sunrise Plot: first sol: rho={rho_opt1_plot[1]}, psi={psi_opt1_plot[1]}")
         }
 
         # Construct bounds for the plot
@@ -653,13 +623,13 @@ runASCAT_enhanced <- function(
           }
         )
         t2 <- Sys.time()
-        log_info("SUNRISE: Finished in {round(difftime(t2, t1, units='secs'), 2)}s")
+        log_info("Sunrise: Finished in {round(difftime(t2, t1, units='secs'), 2)}s")
       }
     }
 
     if (!is.na(copynumberprofilespng)) {
       plot_tasks[["profile"]] <- function() {
-        log_info("PROFILE: Starting genome-wide plot (probes={length(lrr_ds)})...")
+        log_info("Profile Plot: Starting genome-wide plot (probes={length(lrr_ds)})...")
         t1 <- Sys.time()
         grDevices::png(filename = copynumberprofilespng, width = 2000, height = 500, res = 200, type = "cairo")
         ASCAT::ascat.plotAscatProfile(
@@ -669,13 +639,13 @@ runASCAT_enhanced <- function(
         )
         grDevices::dev.off()
         t2 <- Sys.time()
-        log_info("PROFILE: Finished in {round(difftime(t2, t1, units='secs'), 2)}s")
+        log_info("Profile Plot: Finished in {round(difftime(t2, t1, units='secs'), 2)}s")
       }
     }
 
     if (!is.na(nonroundedprofilepng)) {
       plot_tasks[["nonrounded"]] <- function() {
-        log_info("NONROUNDED: Starting genome-wide plot (probes={length(lrr_ds)})...")
+        log_info("Nonrounded Plot: Starting genome-wide plot (probes={length(lrr_ds)})...")
         t1 <- Sys.time()
         grDevices::png(filename = nonroundedprofilepng, width = 2000, height = 500, res = 200, type = "cairo")
         ASCAT::ascat.plotNonRounded(
@@ -685,22 +655,13 @@ runASCAT_enhanced <- function(
         )
         grDevices::dev.off()
         t2 <- Sys.time()
-        log_info("NONROUNDED: Finished in {round(difftime(t2, t1, units='secs'), 2)}s")
+        log_info("Nonrounded Plot: Finished in {round(difftime(t2, t1, units='secs'), 2)}s")
       }
     }
 
     if (length(plot_tasks) > 0) {
-      if (nthreads > 1 && length(plot_tasks) > 1 && .Platform$OS.type != "windows") {
-        n_workers <- min(nthreads, length(plot_tasks))
-        log_info("Generating {length(plot_tasks)} plots in parallel (FORK, threads={n_workers})...")
-
-        # Use mclapply for high-performance forking
-        # This is much faster than PSOCK as it avoids copying the downsampled data
-        parallel::mclapply(plot_tasks, function(f) f(), mc.cores = n_workers)
-      } else {
-        log_info("Generating {length(plot_tasks)} plots sequentially...")
-        lapply(plot_tasks, function(f) f())
-      }
+      log_info("Generating {length(plot_tasks)} genome-wide plots sequentially to ensure container stability...")
+      lapply(plot_tasks, function(f) f())
       log_info("All plotting tasks completed.")
     }
 
