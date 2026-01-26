@@ -44,8 +44,8 @@ find_centroid_of_global_minima <- function(
   psi_grid <- as.numeric(rownames(d))
   rho_grid <- as.numeric(colnames(d))
 
-  for (i in 1:nrow(d)) {
-    for (j in 1:ncol(d)) {
+  for (i in seq_len(nrow(d))) {
+    for (j in seq_len(ncol(d))) {
       if (!is.na(d[i, j]) && d[i, j] == gmin) {
         psi <- psi_grid[i]
         rho <- rho_grid[j]
@@ -57,11 +57,21 @@ find_centroid_of_global_minima <- function(
 
         nA <- (term_base - (s[, "b"] - 1) * factor * term_psi) / rho
         nB <- (term_base + s[, "b"] * factor * term_psi) / rho
+        ploidy <- sum((nA + nB) * s[, "length"]) / sum(s[, "length"])
 
-        ploidy <- sum((nA + nB) * s[, "length"], na.rm = TRUE) / sum(s[, "length"])
-
-        # goodnessOfFit is the same as gmin in this implementation
-        goodnessOfFit <- gmin
+        goodnessOfFit <- if (dist_choice == 0) {
+          # If we are already using the clonal proportion metric, gof is gmin
+          gmin
+        } else {
+          # If metric is squared error, we need to calculate clonal proportion separately for the plotter title
+          g_info <- calc_distance_clonal(
+            s, 0, rho, psi, gamma_param,
+            read_depth = NA,
+            siglevel_BAF = 0.05, maxdist_BAF = 0.01, siglevel_LogR = -0.01,
+            maxdist_LogR = 1, uninformative_baf_threshold = uninformative_baf_threshold
+          )
+          g_info$distance_value
+        }
 
         nropt <- nropt + 1
         optima[[nropt]] <- list(gmin = gmin, i = i, j = j, ploidy = ploidy, gof = goodnessOfFit)
@@ -79,7 +89,7 @@ find_centroid_of_global_minima <- function(
 
   index <- 1
   sqrdist_min <- Inf
-  for (i in 1:length(optima)) {
+  for (i in seq_along(optima)) {
     grid_point <- c(optima[[i]]$i, optima[[i]]$j)
     sqrdist <- (grid_point[1] - centre[1])^2 + (grid_point[2] - centre[2])^2
 
@@ -95,22 +105,19 @@ find_centroid_of_global_minima <- function(
   psi_opt1 <- psi_grid[grid_x]
   rho_opt1 <- min(rho_grid[grid_y], 1)
   ploidy_opt1 <- optima[[index]]$ploidy
-  goodnessOfFit_opt1 <- optima[[index]]$gof
+  goodness_of_fit_opt1 <- optima[[index]]$gof
 
   ref_seg <- ref_seg_matrix[grid_x, grid_y]
 
-  if (minimise) {
-    dist_optima <- gmin
-  } else {
-    dist_optima <- -gmin
-    goodnessOfFit_opt1 <- -goodnessOfFit_opt1
+  if (!minimise && dist_choice == 0) {
+    goodness_of_fit_opt1 <- -goodness_of_fit_opt1
   }
 
   # First optima set (without reference segment override)
   optima_info_without_ref <- list(
     nropt = nropt, psi_opt1 = psi_opt1, rho_opt1 = rho_opt1,
     ploidy_opt1 = ploidy_opt1, ref_seg = ref_seg,
-    goodnessOfFit_opt1 = goodnessOfFit_opt1
+    goodness_of_fit_opt1 = goodness_of_fit_opt1
   )
 
   # Logic for reference segment override
@@ -118,7 +125,7 @@ find_centroid_of_global_minima <- function(
     psi_opt1 <- 2
     rho_opt1 <- 1
     ploidy_opt1 <- 2
-    goodnessOfFit_opt1 <- 1
+    goodness_of_fit_opt1 <- 1
   } else {
     ref_segment_info <- get_psi_rho_from_ref_seg(
       ref_seg, s, ref_major[grid_x, grid_y], ref_minor[grid_x, grid_y], gamma_param
@@ -133,9 +140,19 @@ find_centroid_of_global_minima <- function(
         s, dist_choice, rho_opt1, psi_opt1, gamma_param, read_depth,
         siglevel_BAF, maxdist_BAF, siglevel_LogR, maxdist_LogR, uninformative_baf_threshold
       )
-      goodnessOfFit_opt1 <- distance_info$distance_value
+      # Store the optimization distance separately if needed, but for now we follow the existing pattern
+      # but ensure we also have the goodness of fit (percentage)
+      if (dist_choice == 0) {
+        goodness_of_fit_opt1 <- distance_info$distance_value
+      } else {
+        g_info <- calc_distance_clonal(
+          s, 0, rho_opt1, psi_opt1, gamma_param, read_depth,
+          siglevel_BAF, maxdist_BAF, siglevel_LogR, maxdist_LogR, uninformative_baf_threshold
+        )
+        goodness_of_fit_opt1 <- g_info$distance_value
+      }
     } else {
-      goodnessOfFit_opt1 <- Inf
+      goodness_of_fit_opt1 <- Inf
     }
   }
 
@@ -143,7 +160,7 @@ find_centroid_of_global_minima <- function(
   optima_info <- list(
     nropt = nropt, psi_opt1 = psi_opt1, rho_opt1 = rho_opt1,
     ploidy_opt1 = ploidy_opt1, ref_seg = ref_seg,
-    goodnessOfFit_opt1 = goodnessOfFit_opt1
+    goodness_of_fit_opt1 = goodness_of_fit_opt1
   )
 
   # Plotting

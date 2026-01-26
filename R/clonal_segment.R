@@ -101,8 +101,10 @@ is_segment_clonal <- function(
 
   # Clonal decision
   # Explicitly handle NAs in pval to avoid propagating NAs to the is_clonal vector
-  is_clonal <- (pval > siglevel_BAF)
-  is_clonal[is.na(is_clonal)] <- FALSE
+  is_clonal <- isTRUE(pval > siglevel_BAF)
+  # result of isTRUE is never NA. But if pval is vector?
+  # Need vectorized version of isTRUE
+  is_clonal <- !is.na(pval) & pval > siglevel_BAF
 
   # Stability check (Vectorized)
   unstable <- (nMajor - nMajor.saved) >= 1

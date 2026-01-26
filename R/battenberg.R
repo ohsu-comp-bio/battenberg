@@ -90,6 +90,7 @@
 #' (Default: FALSE)
 #' @param preprocessed_data_dir Directory containing existing preprocessed files (allele counts, etc). If provided, preprocessing is skipped and files are copied from this directory. (Default: NA)
 #' @param phasing_results_dir Directory containing existing phasing/imputation output files. If provided, the phasing/imputation step is skipped. (Default: NA)
+#' @param n_neighbors_search Number of top grid points to search (integer). Set to Inf for exhaustive search. If NULL, only local minima are searched.
 #' @param logging_path Path to write log files to (Default: ".")
 #'
 #' @author sd11, jdemeul, Naser Ansari-Pour, Julio Cesar Cortes Rios
@@ -150,6 +151,10 @@ battenberg <- function(
   usebeagle = FALSE,
   preprocessed_data_dir = NA,
   phasing_results_dir = NA,
+  n_neighbors_search = NULL,
+  grid_psi_step = 0.05,
+  grid_rho_step = 0.01,
+  local_min_window_size = 7,
   logging_path = "."
 ) {
   libs <- .libPaths()
@@ -162,10 +167,6 @@ battenberg <- function(
     Sys.setenv(OMP_NUM_THREADS = threads_per_chromosome)
     Sys.setenv(MKL_NUM_THREADS = threads_per_chromosome)
     Sys.setenv(OPENBLAS_NUM_THREADS = threads_per_chromosome)
-
-    log_setup(logging_path, verbose_logging)
-
-    # Inform the user about the thread configuration
 
     # Inform the user about the thread configuration
     log_info(strrep("-", 60))
@@ -292,7 +293,6 @@ battenberg <- function(
               min_base_qual = min_base_qual,
               min_map_qual = min_map_qual,
               allele_counts_dir = allele_counts_dir,
-              min_normal_depth = min_normal_depth,
               min_normal_depth = min_normal_depth,
               nthreads = threads_per_chromosome, # Pass down the inner threads budget (threads per chromosome)
               libs = libs
@@ -739,7 +739,11 @@ battenberg <- function(
         read_depth = 30,
         analysis = analysis,
         nthreads = inner_threads,
-        enhanced_grid_search = enhanced_grid_search
+        enhanced_grid_search = enhanced_grid_search,
+        n_neighbors_search = n_neighbors_search,
+        grid_psi_step = grid_psi_step,
+        grid_rho_step = grid_rho_step,
+        local_min_window_size = local_min_window_size
       )
 
       # Fit a second CN state (subclonal)

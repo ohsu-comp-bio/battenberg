@@ -413,7 +413,7 @@ germline_reconstruct_normal <- function(
         suppressWarnings(
           for (s in seq_len(nrow(pLOH_regions))) {
             sBAF <- ggplot2::ggplot(
-              ohet, ggplot2::aes(rlang::.data$Position, rlang::.data$baf)
+              ohet, ggplot2::aes(Position, baf)
             ) +
               ggplot2::geom_jitter() +
               ggplot2::ylim(0, 1) +
@@ -429,7 +429,7 @@ germline_reconstruct_normal <- function(
               ggplot2::labs(y = "BAF")
             sLogR <- ggplot2::ggplot(
               logr,
-              ggplot2::aes(rlang::.data$Position, rlang::.data$LogR)
+              ggplot2::aes(Position, LogR)
             ) +
               ggplot2::geom_jitter() +
               ggplot2::ylim(-5.2, 1.2) +
@@ -540,7 +540,7 @@ germline_reconstruct_normal <- function(
       grDevices::pdf(paste0(GERMLINENAME, "_chr", i, "_", MIN_HET_DIST / 1e3, "k_based_qLOH_events.pdf"))
       suppressWarnings(
         for (s in seq_len(nrow(qLOH_regions))) {
-          sBAF <- ggplot2::ggplot(ohet, ggplot2::aes(rlang::.data$Position, rlang::.data$baf)) +
+          sBAF <- ggplot2::ggplot(ohet, ggplot2::aes(Position, baf)) +
             ggplot2::geom_jitter() +
             ggplot2::ylim(0, 1) +
             ggplot2::geom_vline(
@@ -556,7 +556,7 @@ germline_reconstruct_normal <- function(
             ) +
             ggplot2::ggtitle(paste("qARM LOH region", s))
           sLogR <- ggplot2::ggplot(
-            logr, ggplot2::aes(rlang::.data$Position, rlang::.data$LogR)
+            logr, ggplot2::aes(Position, LogR)
           ) +
             ggplot2::geom_jitter() +
             ggplot2::ylim(-5.2, 1.2) +

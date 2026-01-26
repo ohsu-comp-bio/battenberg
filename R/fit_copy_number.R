@@ -36,6 +36,7 @@
 #' determines whether the distance figure is produced (Default paired)
 #' @param nthreads The number of paralel processes to run
 #' @param enhanced_grid_search Flag to determine if the grid search should be performed with a higher number of steps (Default: FALSE)
+#' @param n_neighbors_search Number of top grid points to search (integer). Set to Inf for exhaustive search. If NULL, only local minima are searched.
 #' @author dw9, sd11
 #' @export
 fit_copy_number <- function(
@@ -50,7 +51,7 @@ fit_copy_number <- function(
   max_ploidy = 4.8,
   min_rho = 0.1,
   max_rho = 1.0,
-  min_goodness = 63,
+  min_goodness = 0.63,
   uninformative_baf_threshold = 0.51,
   gamma_param = 1,
   use_preset_rho_psi = FALSE,
@@ -59,7 +60,11 @@ fit_copy_number <- function(
   read_depth = 30,
   analysis = "paired",
   nthreads = 1,
-  enhanced_grid_search = FALSE
+  enhanced_grid_search = FALSE,
+  n_neighbors_search = NULL,
+  grid_psi_step = 0.05,
+  grid_rho_step = 0.01,
+  local_min_window_size = 7
 ) {
   options(warn = 1) # Force immediate warning printing
   assert_file_exists(inputfile_baf_segmented)
@@ -235,9 +240,15 @@ fit_copy_number <- function(
         cnaStatusFile = cnaStatusFile, gamma = gamma_param,
         allow100percent = TRUE, min_ploidy = min_ploidy,
         max_ploidy = max_ploidy, min_rho = min_rho, max_rho = max_rho,
+        min_goodness = min_goodness,
         chr_names = chr_names,
         analysis = analysis,
         uninformative_baf_threshold = uninformative_baf_threshold,
+        early_termination = FALSE,
+        n_neighbors_search = n_neighbors_search,
+        psi_step = grid_psi_step,
+        rho_step = grid_rho_step,
+        local_min_window_size = local_min_window_size,
         nthreads = nthreads
       )
     } else {
@@ -254,6 +265,8 @@ fit_copy_number <- function(
         min_rho = min_rho, max_rho = max_rho,
         min_goodness = min_goodness, chr_names = chr_names, analysis = analysis,
         uninformative_baf_threshold = uninformative_baf_threshold,
+        local_min_window_size = local_min_window_size,
+        n_neighbors_search = n_neighbors_search,
         nthreads = nthreads
       )
     }
@@ -262,7 +275,8 @@ fit_copy_number <- function(
 
     # guard rail - check for valid solution
     if (is.na(ascat_optimum_pair$rho) || is.na(ascat_optimum_pair$psi)) {
-      log_failure("Grid search failed to find a valid purity/ploidy solution. Data might be too noisy.")
+      log_info("Grid search failed to find a valid purity/ploidy solution for {samplename}. Data might be too noisy or parameters too restrictive.")
+      return(invisible(NULL))
     }
   }
 
@@ -282,11 +296,13 @@ fit_copy_number <- function(
   )
 
   if (is.na(out$output_optimum_pair$rho) || is.na(out$output_optimum_pair$psi)) {
-    log_failure("Final clonal model fit failed to identify a valid purity/ploidy solution.")
+    log_info("Final clonal model fit failed to identify a valid purity/ploidy solution for {samplename}.")
+    return(invisible(NULL))
   }
   d <- out$dist_matrix_info$distance_matrix
   if (all(is.na(d)) || all(is.infinite(d))) {
-    log_failure("Distance matrix is entirely NA or Inf. No valid copy number solution possible.")
+    log_info("Distance matrix is entirely NA or Inf for {samplename}. No valid copy number solution possible.")
+    return(invisible(NULL))
   }
   log_info("ASCAT modeling complete for {samplename}. Writing output files.")
   # Save results
@@ -295,7 +311,7 @@ fit_copy_number <- function(
     psi = c(ascat_optimum_pair$psi, out$output_optimum_pair_without_ref$psi, out$output_optimum_pair$psi),
     ploidy = c(ascat_optimum_pair$ploidy, out$output_optimum_pair_without_ref$ploidy, out$output_optimum_pair$ploidy),
     distance = c(NA, out$distance_without_ref, out$distance),
-    is.best = c(NA, !out$is_ref_better, out$is_ref_better),
+    is_best = c(FALSE, !out$is_ref_better, out$is_ref_better),
     row.names = c("ASCAT", "FRAC_GENOME", "REF_SEG")
   )
   # Write with row.names = TRUE to match original Battenberg format
@@ -462,10 +478,19 @@ call_subclones <- function(
   if (nrow(cna) == 0 || cna_total_len == 0 || nrow(subcloneres_subclonal) == 0) {
     goodness <- 1.0
   } else {
-    subclonal_total_len <- collapse::fsum(subcloneres_subclonal$length, na.rm = TRUE)
-    subclonal_fraction <- subclonal_total_len / cna_total_len
+    # Updated goodness calculation to match Battenberg logic:
+    # Goodness here represents the Fraction of the Genome that is Clonal (1 - subclonal_fraction)
+    # But specifically on the ABERRANT genome (excluding diploid)
 
-    goodness <- max(0, min(1, 1 - subclonal_fraction))
+    # Calculate total genome length
+    total_genome_len <- collapse::fsum(subcloneres$length, na.rm = TRUE)
+
+    # Calculate length of segments that are NOT clonal (i.e. subclonal)
+    # definition: frac1_A < 1
+    subclonal_len <- collapse::fsum(subcloneres$length[subcloneres$frac1_A < 1], na.rm = TRUE)
+
+    # Calculate goodness as the % of genome that is clonal
+    goodness <- 1 - (subclonal_len / total_genome_len)
   }
 
   log_info("PGA.is.clonal = {sprintf('%2.1f%%', goodness * 100)}")
@@ -497,6 +522,9 @@ call_subclones <- function(
       )
       breakpoints_pos <- sort(unique(c(bp_chr[[2]], bp_chr[[3]]) / 1e6))
 
+      # Extract columns as vectors from data.table for this chromosome
+      logr_chr_mask <- .subset2(LogRvals, 1) == chr
+
       grDevices::png(
         filename = paste0(output_figures_prefix, chr, ".png"),
         width = 2000, height = 2000, res = 200, type = "cairo"
@@ -504,8 +532,8 @@ call_subclones <- function(
       create_subclonal_cn_plot(
         chrom = chr,
         chrom_position = pos / 1e6,
-        LogRposke = LogRvals[LogRvals[, 1] == chr, 2],
-        LogRchr = LogRvals[LogRvals[, 1] == chr, 3],
+        LogRposke = .subset2(LogRvals, 2)[logr_chr_mask],
+        LogRchr = .subset2(LogRvals, 3)[logr_chr_mask],
         BAFchr = BAF[chr_idx],
         BAFsegchr = BAFseg[chr_idx],
         BAFpvalschr = BAFpvals[chr_idx],
@@ -536,12 +564,16 @@ call_subclones <- function(
   state_min <- calc_state(subclones$nMin1_A, subclones$nMin2_A, subclones$frac1_A, subclones$frac2_A)
   state_maj <- calc_state(subclones$nMaj1_A, subclones$nMaj2_A, subclones$frac1_A, subclones$frac2_A)
 
-  ploidy <- sum((state_min + state_maj) * seg_len, na.rm = TRUE) / sum(seg_len, na.rm = TRUE)
+  total_len <- sum(seg_len, na.rm = TRUE)
+  ploidy <- if (total_len > 0) sum((state_min + state_maj) * seg_len, na.rm = TRUE) / total_len else 2.0
+
+  if (is.na(ploidy) || ploidy <= 0) ploidy <- 2.0
 
   # Final Outputs
   plot_gw_subclonal_cn(subclones, BAFvals, rho, ploidy, goodness, output_gw_figures_prefix, chr_names, sample_name)
 
   cp_out <- data.frame(purity = rho, ploidy = ploidy, psi = psit)
+  log_info("Writing purity/ploidy for {sample_name}: rho={rho}, ploidy={ploidy}, psit={psit}")
   data.table::fwrite(cp_out, paste0(sample_name, "_purity_ploidy.txt"), quote = FALSE, sep = "\t", row.names = FALSE)
 }
 
@@ -564,14 +596,19 @@ call_subclones <- function(
 determine_copynumber <- function(BAFvals, LogRvals, rho, psi, gamma, ctrans,
                                  ctrans.logR, maxdist, siglevel, noperms,
                                  cn_upper_limit) {
-  # Standardizing inputs - stripped redundant as.vector calls
-  BAFphased <- BAFvals[, 4]
-  BAFseg <- BAFvals[, 5]
-  BAFpos <- ctrans[BAFvals[, 1]] * 1e9 + BAFvals[, 2]
-  LogRpos <- ctrans.logR[LogRvals[, 1]] * 1e9 + LogRvals[, 2]
+  # Standardizing inputs - use .subset2 to extract columns as vectors from data.table
+  BAFphased <- as.numeric(.subset2(BAFvals, 4))
+  BAFseg <- as.numeric(.subset2(BAFvals, 5))
+  BAFchr <- as.character(.subset2(BAFvals, 1))
+  BAFposition <- as.numeric(.subset2(BAFvals, 2))
+  BAFpos <- ctrans[BAFchr] * 1e9 + BAFposition
 
-  # Boundary logic
-  switchpoints <- c(0, which(BAFseg[-1] != BAFseg[-length(BAFseg)] | BAFvals[-1, 1] != BAFvals[-nrow(BAFvals), 1]), length(BAFseg))
+  LogRchr <- as.character(.subset2(LogRvals, 1))
+  LogRposition <- as.numeric(.subset2(LogRvals, 2))
+  LogRpos <- ctrans.logR[LogRchr] * 1e9 + LogRposition
+
+  # Boundary logic - now BAFchr is already extracted as a vector
+  switchpoints <- c(0, which(BAFseg[-1] != BAFseg[-length(BAFseg)] | BAFchr[-1] != BAFchr[-length(BAFchr)]), length(BAFseg))
   BAFlevels <- BAFseg[switchpoints[-1]]
 
   res_list <- vector(mode = "list", length = length(BAFlevels))
@@ -591,24 +628,27 @@ determine_copynumber <- function(BAFvals, LogRvals, rho, psi, gamma, ctrans,
   seg_ids <- findInterval(LogRpos, seg_starts)
 
   # Filter LogR probes that are within the matched segment's end and not infinite
-  valid_logr <- seg_ids > 0 & LogRpos <= seg_ends[pmax(1, seg_ids)] & !is.infinite(LogRvals[[3]])
+  # Use .subset2 to extract column as vector from data.table (avoids list return)
+  logr_col3 <- as.numeric(.subset2(LogRvals, 3))
+  valid_ids <- pmax(1, seg_ids)
+  valid_logr <- which(seg_ids > 0 & LogRpos <= seg_ends[valid_ids] & !is.infinite(logr_col3) & !is.na(logr_col3))
 
   # Calculate mean LogR per segment ID
   # We use collapse::fmean with the assigned group IDs
-  seg_logr_means <- as.numeric(collapse::fmean(LogRvals[[3]][valid_logr], g = seg_ids[valid_logr]))
+  seg_logr_means <- as.numeric(collapse::fmean(logr_col3[valid_logr], g = seg_ids[valid_logr]))
 
   # Map back to the BAFlevels (some segments might be missing LogR data)
   LogR_vec <- numeric(length(BAFlevels))
   LogR_vec[sort(unique(seg_ids[valid_logr]))] <- seg_logr_means
 
-  # 2. Vectorized Clonal Math
-  # BAFlevels (l) is normalized to be major allele freq (>= 0.5)
-  l_vec <- pmax(BAFlevels, 1 - BAFlevels)
-
-  # Precompute terms
+  # 2. Clonal Copy Number Expectations (Pixel Perfect arithmetic)
+  # Basic physical floor for Rho to prevent Inf results
+  rho_floor <- max(0.01, rho, na.rm = TRUE)
   logr_factor <- 2^(LogR_vec / gamma)
-  nMajor_vec <- (rho - 1 + l_vec * psi * logr_factor) / rho
-  nMinor_vec <- (rho - 1 + (1 - l_vec) * psi * logr_factor) / rho
+  l_vec <- BAFlevels
+
+  nMajor_vec <- (rho_floor - 1 + l_vec * psi * logr_factor) / rho_floor
+  nMinor_vec <- (rho_floor - 1 + (1 - l_vec) * psi * logr_factor) / rho_floor
 
   # Handle physical impossibility (Negative nMinor)
   neg_minor <- nMinor_vec < 0 & !is.na(nMinor_vec)
@@ -764,6 +804,10 @@ determine_copynumber <- function(BAFvals, LogRvals, rho, psi, gamma, ctrans,
   }
 
 
+  # Generate dynamic column names
+  base_names <- c("nMaj1", "nMin1", "frac1", "nMaj2", "nMin2", "frac2", "SDfrac", "SDfrac_boot", "frac1_0.025", "frac1_0.975")
+  dynamic_names <- paste0(rep(base_names, 6), "_", rep(LETTERS[1:6], each = 10))
+
   # Final formatting
   subcloneres <- as.data.frame(do.call(rbind, res_list))
   colnames(subcloneres) <- c("chr", "startpos", "endpos", "BAF", "pval", "LogR", "ntot", dynamic_names)
@@ -844,6 +888,7 @@ plot_gw_subclonal_cn <- function(subclones, BAFvals, rho, ploidy, goodness,
   })
 
   # Plot subclonal copy number as mixtures of two states
+  # Use explicit calls to refactored plotting functions
   grDevices::png(
     filename = paste(output_gw_figures_prefix, "_average.png", sep = ""),
     width = 2000, height = 500, res = 200, type = "cairo"
@@ -1036,35 +1081,36 @@ callChrXsubclones <- function(
         }
       }
       pcf_df <- do.call(rbind, pcf_results)
-    } else {
-      pcf_df <- copynumber::pcf(pcf_input, gamma = X_gamma, kmin = X_kmin)
     }
   } else {
     pcf_df <- copynumber::pcf(pcf_input, gamma = X_gamma, kmin = X_kmin)
   }
+  log_info("PCF complete: found {nrow(pcf_df)} segments on chrX.")
 
   data.table::fwrite(pcf_df, paste0(tumourname, "_PCF_gamma_", X_gamma, "_chrX.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
 
   # Load purity, ploidy and autosomal segments
   pupl <- data.table::fread(paste0(tumourname, "_purity_ploidy.txt"), data.table = FALSE)
-  rho <- pupl[1, 1]
-  psi_sample <- pupl$ploidy
+  rho <- pupl$purity[1]
+  psi_sample <- pupl$ploidy[1]
+  log_info("Loaded autosomal metrics for {tumourname}: rho={rho}, ploidy={psi_sample}")
   bb_data <- data.table::fread(paste0(tumourname, "_copynumber_extended.txt"), data.table = FALSE)
 
   # Calculate LogR correction based on autosomal diploid regions
-  bb_dip <- bb_data[bb_data$nMaj1_A == 1 & bb_data$nMin1_A == 1 & bb_data$frac1_A == 1, ]
-  bb_corr <- if (nrow(bb_dip) > 1) {
-    -mean(bb_dip$LogR)
+  bb_dip <- bb_data[which(bb_data$nMaj1_A == 1 & bb_data$nMin1_A == 1 & bb_data$frac1_A == 1), ]
+  bb_corr <- if (nrow(bb_dip) > 0) {
+    -mean(bb_dip$LogR, na.rm = TRUE)
   } else {
     # WGD Fallback logic
-    cnloh <- bb_data[bb_data$nMaj1_A == 2 & bb_data$nMin1_A == 0 & bb_data$frac1_A == 1, ]
-    if (nrow(cnloh) > 0) -mean(cnloh$LogR) else -log2(2 / psi_sample)
+    cnloh <- bb_data[which(bb_data$nMaj1_A == 2 & bb_data$nMin1_A == 0 & bb_data$frac1_A == 1), ]
+    if (nrow(cnloh) > 0) -mean(cnloh$LogR, na.rm = TRUE) else -log2(2 / max(psi_sample, 0.1, na.rm = TRUE))
   }
+  log_info("LogR correction (bb_corr): {bb_corr}")
 
   # Estimate LogR Standard Deviation (Pixel Perfect SD logic)
-  bb_g1 <- bb_data[bb_data$nMaj1_A == 2 & bb_data$nMin1_A == 1 & bb_data$frac1_A == 1, ]
-  bb_g2 <- bb_data[bb_data$nMaj1_A == 3 & bb_data$nMin1_A == 1 & bb_data$frac1_A == 1, ]
-  bb_g3 <- bb_data[bb_data$nMaj1_A == 4 & bb_data$nMin1_A == 1 & bb_data$frac1_A == 1, ]
+  bb_g1 <- bb_data[which(bb_data$nMaj1_A == 2 & bb_data$nMin1_A == 1 & bb_data$frac1_A == 1), ]
+  bb_g2 <- bb_data[which(bb_data$nMaj1_A == 3 & bb_data$nMin1_A == 1 & bb_data$frac1_A == 1), ]
+  bb_g3 <- bb_data[which(bb_data$nMaj1_A == 4 & bb_data$nMin1_A == 1 & bb_data$frac1_A == 1), ]
   bb_sd_max <- max(c(
     collapse::fsd(bb_dip$LogR),
     collapse::fsd(bb_g1$LogR),
@@ -1072,6 +1118,7 @@ callChrXsubclones <- function(
     collapse::fsd(bb_g3$LogR),
     0.05
   ), na.rm = TRUE)
+  log_info("Estimated LogR SD (bb_sd_max): {bb_sd_max}")
 
   # Expected LogR values for Male ChrX
   exp_logr_gain <- sapply(2:10000, function(x) log2((rho * x + (1 - rho)) / 1))
@@ -1084,52 +1131,53 @@ callChrXsubclones <- function(
   } else {
     bb_sd_max
   }
+  log_info("LOH LogR SD (loh_sd): {loh_sd}")
 
   process_seg <- function(seg_row) {
     seg <- as.list(seg_row)
     seg$mean <- as.numeric(seg$mean) + bb_corr
-    seg$type <- if (seg$mean < 0) "loss" else "gain"
+    seg$type <- if (isTRUE(seg$mean < 0)) "loss" else "gain"
 
     # Check if CNA is significant
-    seg$CNA <- if (seg$type == "gain") {
-      if (seg$mean > (1.96 * bb_sd_max)) "yes" else "no"
+    seg$CNA <- if (isTRUE(seg$type == "gain")) {
+      if (isTRUE(seg$mean > (1.96 * bb_sd_max))) "yes" else "no"
     } else {
-      if (seg$mean < (-1.96 * bb_sd_max)) "yes" else "no"
+      if (isTRUE(seg$mean < (-1.96 * bb_sd_max))) "yes" else "no"
     }
 
-    if (seg$CNA == "yes") {
-      if (seg$type == "gain") {
+    if (isTRUE(seg$CNA == "yes")) {
+      if (isTRUE(seg$type == "gain")) {
         # Determine CN by ranking against expectations
         rank_val <- which(sort(c(exp_logr_gain, seg$mean)) == seg$mean)[1]
         seg$CN <- rank_val + 1
 
         # Clonality test
         if (rank_val == 1) {
-          is_clonal <- round(exp_logr_gain[rank_val] - seg$mean, 2) <= round(bb_sd_max / exp_logr_gain[rank_val], 2)
+          is_clonal <- isTRUE(round(exp_logr_gain[rank_val] - seg$mean, 2) <= round(bb_sd_max / exp_logr_gain[rank_val], 2))
           seg$clonal <- if (is_clonal) "yes" else "no"
         } else if (rank_val >= 5) {
           # Closest check for high CN
-          if (abs(seg$mean - exp_logr_gain[rank_val - 1]) < abs(seg$mean - exp_logr_gain[rank_val])) seg$CN <- seg$CN - 1
+          if (isTRUE(abs(seg$mean - exp_logr_gain[rank_val - 1]) < abs(seg$mean - exp_logr_gain[rank_val]))) seg$CN <- seg$CN - 1
           seg$clonal <- "yes"
         } else {
-          if (abs(seg$mean - exp_logr_gain[rank_val - 1]) < abs(seg$mean - exp_logr_gain[rank_val])) {
-            is_clonal <- round(seg$mean - exp_logr_gain[rank_val - 1], 2) <= round(bb_sd_max / exp_logr_gain[rank_val - 1], 2)
+          if (isTRUE(abs(seg$mean - exp_logr_gain[rank_val - 1]) < abs(seg$mean - exp_logr_gain[rank_val]))) {
+            is_clonal <- isTRUE(round(seg$mean - exp_logr_gain[rank_val - 1], 2) <= round(bb_sd_max / exp_logr_gain[rank_val - 1], 2))
             if (is_clonal) seg$CN <- seg$CN - 1
             seg$clonal <- if (is_clonal) "yes" else "no"
           } else {
-            is_clonal <- round(exp_logr_gain[rank_val] - seg$mean, 2) < round(bb_sd_max / exp_logr_gain[rank_val], 2)
+            is_clonal <- isTRUE(round(exp_logr_gain[rank_val] - seg$mean, 2) < round(bb_sd_max / exp_logr_gain[rank_val], 2))
             seg$clonal <- if (is_clonal) "yes" else "no"
           }
         }
         # CCF Gain
-        seg$CCF <- if (seg$clonal == "no") (2^seg$mean - (rho * (seg$CN - 1) + (1 - rho))) / rho else 1
+        seg$CCF <- if (isTRUE(seg$clonal == "no")) (2^seg$mean - (rho * (seg$CN - 1) + (1 - rho))) / rho else 1
       } else {
         # Loss Logic
         seg$CN <- 0
-        seg$clonal <- if (round(abs(exp_logr_loss - seg$mean), 2) < round(abs(loh_sd / exp_logr_loss), 2)) "yes" else "no"
+        seg$clonal <- if (isTRUE(round(abs(exp_logr_loss - seg$mean), 2) < round(abs(loh_sd / exp_logr_loss), 2))) "yes" else "no"
         # CCF Loss
-        seg$CCF <- if (seg$clonal == "no") (1 - 2^seg$mean) / rho else 1
-        if (seg$CCF >= 0.95) {
+        seg$CCF <- if (isTRUE(seg$clonal == "no")) (1 - 2^seg$mean) / rho else 1
+        if (isTRUE(seg$CCF >= 0.95)) {
           seg$CCF <- 1
           seg$clonal <- "yes"
         }
@@ -1142,20 +1190,41 @@ callChrXsubclones <- function(
     return(as.data.frame(seg))
   }
 
-  # Apply segment logic and filter centromere noise
   seg_list <- lapply(seq_len(nrow(pcf_df)), function(i) process_seg(pcf_df[i, ]))
   seg_df_all <- do.call(rbind, seg_list)
 
+  # Deep diagnostics
+  log_info("Diagnostics - rho: {rho}")
+  log_info("Diagnostics - seg_df_all columns: {paste(colnames(seg_df_all), collapse=', ')}")
+  log_info("Diagnostics - first row CN: {seg_df_all$CN[1]}, CNA: {seg_df_all$CNA[1]}, type: {seg_df_all$type[1]}, clonal: {seg_df_all$clonal[1]}, CCF: {seg_df_all$CCF[1]}")
+
+  log_info("Processed {nrow(seg_df_all)} segments before centromere filtering.")
+
   # Centromere Noise Filtering
-  is_noise <- (seg_df_all$arm == "p" & seg_df_all$end.pos > (x_centromere[1] - 1e6) & seg_df_all$CNA == "yes" & seg_df_all$end.pos < (seg_df_all$start.pos + 1e6)) |
-    (seg_df_all$arm == "q" & seg_df_all$end.pos < (x_centromere[2] + 1e6) & seg_df_all$CNA == "yes" & seg_df_all$end.pos < (seg_df_all$start.pos + 1e6))
+  # Safely handle missing columns to prevent logical(0) wiping out the data frame
+  has_cols <- "arm" %in% colnames(seg_df_all) && "end.pos" %in% colnames(seg_df_all) &&
+    "CNA" %in% colnames(seg_df_all) && "start.pos" %in% colnames(seg_df_all)
+
+  if (!has_cols) {
+    log_warn("Centromere filtering columns missing (arm, end.pos, CNA, or start.pos). Skipping noise filter.")
+  }
+
+  if (has_cols) {
+    is_noise <- (seg_df_all$arm == "p" & seg_df_all$end.pos > (x_centromere[1] - 1e6) & seg_df_all$CNA == "yes" & seg_df_all$end.pos < (seg_df_all$start.pos + 1e6)) |
+      (seg_df_all$arm == "q" & seg_df_all$end.pos < (x_centromere[2] + 1e6) & seg_df_all$CNA == "yes" & seg_df_all$end.pos < (seg_df_all$start.pos + 1e6))
+    is_noise[is.na(is_noise)] <- FALSE
+  } else {
+    is_noise <- rep(FALSE, nrow(seg_df_all))
+  }
+
   seg_filtered <- seg_df_all[!is_noise, ]
+  log_info("{nrow(seg_filtered)} segments remaining after centromere noise filtering.")
 
   # Map to nMaj/nMin structure (Pixel Perfect mapping)
   final_rows <- list()
   for (i in seq_len(nrow(seg_filtered))) {
     s <- seg_filtered[i, ]
-    if (s$CNA == "no") {
+    if (isTRUE(s$CNA == "no")) {
       s$nMaj1 <- 1
       s$nMin1 <- 0
       s$frac1 <- 1
@@ -1163,8 +1232,8 @@ callChrXsubclones <- function(
       s$nMin2 <- 0
       s$frac2 <- 0
     } else {
-      if (s$type == "gain") {
-        if (s$clonal == "yes") {
+      if (isTRUE(s$type == "gain")) {
+        if (isTRUE(s$clonal == "yes")) {
           s$nMaj1 <- s$CN
           s$nMin1 <- 0
           s$frac1 <- 1
@@ -1172,18 +1241,18 @@ callChrXsubclones <- function(
           s$nMin2 <- 0
           s$frac2 <- 0
         } else {
-          main_clone <- if (s$CCF > 0.5) s$CN else s$CN - 1
-          sec_clone <- if (s$CCF > 0.5) s$CN - 1 else s$CN
+          main_clone <- if (isTRUE(s$CCF > 0.5)) s$CN else s$CN - 1
+          sec_clone <- if (isTRUE(s$CCF > 0.5)) s$CN - 1 else s$CN
           s$nMaj1 <- main_clone
           s$nMin1 <- 0
-          s$frac1 <- if (s$CCF > 0.5) s$CCF else 1 - s$CCF
+          s$frac1 <- if (isTRUE(s$CCF > 0.5)) s$CCF else 1 - s$CCF
           s$nMaj2 <- sec_clone
           s$nMin2 <- 0
           s$frac2 <- 1 - s$frac1
         }
       } else {
         # Loss
-        if (s$clonal == "yes") {
+        if (isTRUE(s$clonal == "yes")) {
           s$nMaj1 <- s$CN
           s$nMin1 <- 0
           s$frac1 <- 1
@@ -1191,9 +1260,9 @@ callChrXsubclones <- function(
           s$nMin2 <- 0
           s$frac2 <- 0
         } else {
-          s$nMaj1 <- if (s$CCF > 0.5) 0 else 1
-          s$nMaj2 <- if (s$CCF > 0.5) 1 else 0
-          s$frac1 <- if (s$CCF > 0.5) s$CCF else 1 - s$CCF
+          s$nMaj1 <- if (isTRUE(s$CCF > 0.5)) 0 else 1
+          s$nMaj2 <- if (isTRUE(s$CCF > 0.5)) 1 else 0
+          s$frac1 <- if (isTRUE(s$CCF > 0.5)) s$CCF else 1 - s$CCF
           s$frac2 <- 1 - s$frac1
           s$nMin1 <- 0
           s$nMin2 <- 0
@@ -1203,8 +1272,12 @@ callChrXsubclones <- function(
     final_rows[[i]] <- s
   }
   subclones_full <- do.call(rbind, final_rows)
-  subclones_full$subclonalCN <- (subclones_full$nMaj1 + subclones_full$nMin1) * subclones_full$frac1 +
-    (subclones_full$nMaj2 + subclones_full$nMin2) * subclones_full$frac2
+  subclones_full$subclonalCN <- (as.numeric(subclones_full$nMaj1) + as.numeric(subclones_full$nMin1)) * as.numeric(subclones_full$frac1) +
+    (as.numeric(subclones_full$nMaj2) + as.numeric(subclones_full$nMin2)) * as.numeric(subclones_full$frac2)
+
+  # Ensure no NAs in subclonalCN
+  subclones_full$subclonalCN[is.na(subclones_full$subclonalCN)] <- 0
+  log_info("subclonalCN calculated. Range: {min(subclones_full$subclonalCN)} to {max(subclones_full$subclonalCN)}")
 
   # Reformat and Merge Adjacent Segments
   out_df <- data.frame(
@@ -1225,7 +1298,7 @@ callChrXsubclones <- function(
   merged_list <- list()
   for (grp in groups) {
     sub_grp <- out_df[out_df$orig_rank %in% grp, ]
-    if (nrow(sub_grp) > 1 && length(unique(sub_grp$arm)) == 1 && collapse::fsd(sub_grp$subclonalCN) <= 0.01) {
+    if (nrow(sub_grp) > 1 && length(unique(sub_grp$arm)) == 1 && isTRUE(collapse::fsd(sub_grp$subclonalCN) <= 0.01)) {
       m_seg <- sub_grp[1, ]
       m_seg$endpos <- sub_grp$endpos[nrow(sub_grp)]
       m_seg$nSNPs <- sum(sub_grp$nSNPs)
@@ -1248,11 +1321,27 @@ callChrXsubclones <- function(
     nMaj1_A = merged_df$nMaj1, nMin1_A = merged_df$nMin1, frac1_A = merged_df$frac1,
     nMaj2_A = merged_df$nMaj2, nMin2_A = merged_df$nMin2, frac2_A = merged_df$frac2
   )
-  data.table::fwrite(rbind(autosomal_only[, 1:9], x_new), paste0(tumourname, "_copynumber.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+  data.table::fwrite(rbind(autosomal_only[, c(1:3, 8:13)], x_new), paste0(tumourname, "_copynumber.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+
+  # Standard copynumber_extended.txt update
+  x_new_extended <- data.frame(
+    chr = merged_df$chrom, startpos = merged_df$startpos, endpos = merged_df$endpos,
+    BAF = NA, pval = NA, LogR = merged_df$LogR, ntot = NA,
+    nMaj1_A = merged_df$nMaj1, nMin1_A = merged_df$nMin1, frac1_A = merged_df$frac1,
+    nMaj2_A = merged_df$nMaj2, nMin2_A = merged_df$nMin2, frac2_A = merged_df$frac2,
+    stringsAsFactors = FALSE
+  )
+  if (ncol(bb_data) > 13) {
+    extra_cols <- as.data.frame(matrix(NA, nrow = nrow(x_new_extended), ncol = ncol(bb_data) - 13))
+    colnames(extra_cols) <- colnames(bb_data)[14:ncol(bb_data)]
+    x_new_extended <- cbind(x_new_extended, extra_cols)
+  }
+  data.table::fwrite(rbind(autosomal_only, x_new_extended), paste0(tumourname, "_copynumber_extended.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
 
   # Average Ploidy Plot
-  pga_val <- if (any(merged_df$CNA == "yes")) {
-    sum(merged_df$endpos[merged_df$clonal == "yes"] - merged_df$startpos[merged_df$clonal == "yes"], na.rm = TRUE) /
+  pga_val <- if (any(merged_df$CNA == "yes", na.rm = TRUE)) {
+    clonal_yes <- !is.na(merged_df$clonal) & merged_df$clonal == "yes"
+    sum(merged_df$endpos[clonal_yes] - merged_df$startpos[clonal_yes], na.rm = TRUE) /
       sum(merged_df$endpos[!is.na(merged_df$clonal)] - merged_df$startpos[!is.na(merged_df$clonal)], na.rm = TRUE)
   } else {
     "NA"
@@ -1263,53 +1352,59 @@ callChrXsubclones <- function(
     if (pga_val == "NA") "NA" else paste0(round(as.numeric(pga_val) * 100, 1), "%")
   )
 
-  avg_plot <- ggplot2::ggplot(merged_df) +
-    ggplot2::geom_hline(
-      yintercept = 0:ceiling(max(merged_df$subclonalCN)),
-      linetype = "longdash", col = "grey", linewidth = 0.2
-    ) +
-    ggplot2::geom_rect(
-      ggplot2::aes(
-        xmin = rlang::.data$startpos, xmax = rlang::.data$endpos,
-        ymin = rlang::.data$subclonalCN - 0.02, ymax = rlang::.data$subclonalCN + 0.02
-      )
-    ) +
-    ggplot2::geom_vline(
-      xintercept = x_centromere, linetype = "longdash", col = "green"
-    ) +
-    ggplot2::labs(
-      x = "ChrX coordinate (bp)",
-      y = "Average Ploidy",
-      title = plot_title
-    ) +
-    ggplot2::theme_minimal() +
-    ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5))
-
-  if (AR) {
-    # Highlight AR locus
-    seg_ar <- merged_df[merged_df$startpos < ar_locus$endpos & merged_df$endpos > ar_locus$startpos, ]
-    if (nrow(seg_ar) > 0) {
-      avg_plot <- avg_plot + ggplot2::geom_rect(
-        data = seg_ar,
+  if (nrow(merged_df) > 0) {
+    avg_plot <- ggplot2::ggplot(merged_df) +
+      ggplot2::geom_hline(
+        yintercept = 0:ceiling(max(merged_df$subclonalCN, na.rm = TRUE)),
+        linetype = "longdash", col = "grey", linewidth = 0.2
+      ) +
+      ggplot2::geom_rect(
         ggplot2::aes(
-          xmin = rlang::.data$startpos,
-          xmax = rlang::.data$endpos,
-          ymin = rlang::.data$subclonalCN - 0.02,
-          ymax = rlang::.data$subclonalCN + 0.02
-        ),
-        fill = "red"
-      )
+          xmin = startpos, xmax = endpos,
+          ymin = subclonalCN - 0.02, ymax = subclonalCN + 0.02
+        )
+      ) +
+      ggplot2::geom_vline(
+        xintercept = x_centromere, linetype = "longdash", col = "green"
+      ) +
+      ggplot2::labs(
+        x = "ChrX coordinate (bp)",
+        y = "Average Ploidy",
+        title = plot_title
+      ) +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(plot.title = ggplot2::element_text(hjust = 0.5))
+
+    if (AR) {
+      # Highlight AR locus
+      seg_ar <- merged_df[!is.na(merged_df$startpos) & !is.na(merged_df$endpos) &
+        merged_df$startpos < ar_locus$endpos & merged_df$endpos > ar_locus$startpos, ]
+      if (nrow(seg_ar) > 0) {
+        avg_plot <- avg_plot + ggplot2::geom_rect(
+          data = seg_ar,
+          ggplot2::aes(
+            xmin = startpos,
+            xmax = endpos,
+            ymin = subclonalCN - 0.02,
+            ymax = subclonalCN + 0.02
+          ),
+          fill = "red"
+        )
+      }
     }
+
+    grDevices::pdf(paste0(tumourname, "_chrX_average_ploidy.pdf"))
+    log_info(avg_plot)
+    log_info("Average ploidy plot generated for chrX.")
+    grDevices::dev.off()
+  } else {
+    log_info("No segments found for chrX. Skipping average ploidy plot.")
   }
 
-  grDevices::pdf(paste0(tumourname, "_chrX_average_ploidy.pdf"))
-  print(avg_plot)
-  log_info("Average ploidy plot generated for chrX.")
-  grDevices::dev.off()
-
   # Final Genome-wide Plot Update
-  temp_dt <- data.table::fread(paste0(tumourname, "_rho_and_psi.txt"))
-  goodness_val <- temp_dt[temp_dt[["is_best"]] == TRUE, temp_dt[["distance"]]]
+  temp_dt <- data.table::fread(paste0(tumourname, "_rho_and_psi.txt"), data.table = FALSE)
+  goodness_val <- temp_dt[temp_dt$is_best %in% TRUE, "distance"][1]
+  log_info("Retrieved goodness_val for plot: {goodness_val}")
   baf_raw <- read_bafsegmented(
     paste0(tumourname, ".BAFsegmented.txt")
   ) |> as.data.frame()
@@ -1323,7 +1418,7 @@ callChrXsubclones <- function(
   baf_updated <- rbind(baf_raw[!baf_raw$Chromosome %in% c("X", "chrX"), ], baf_sim_x)
 
   plot_gw_subclonal_cn(
-    subclones = rbind(autosomal_only[, 1:9], x_new), BAFvals = baf_updated, rho = rho, ploidy = psi_sample,
+    subclones = rbind(autosomal_only[, c(1:3, 8:13)], x_new), BAFvals = baf_updated, rho = rho, ploidy = psi_sample,
     goodness = goodness_val, output_gw_figures_prefix = paste0(tumourname, "_BattenbergProfile"),
     chr_names = chrom_names, tumourname = tumourname
   )

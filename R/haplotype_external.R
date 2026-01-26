@@ -492,18 +492,18 @@ call_multisample_MSAI <- function(
         if (nrow(msaidf) > 0) {
           p1 <- p1 + ggplot2::geom_rect(
             data = msaidf, mapping = ggplot2::aes(
-              xmin = rlang::.data$start,
-              xmax = rlang::.data$end,
+              xmin = start,
+              xmax = end,
               ymin = 0, ymax = 1
             ),
             alpha = .05, color = "gray", size = 0
           )
         }
         p1 <- p1 + ggplot2::geom_point(data = df1, mapping = ggplot2::aes(
-          x = rlang::.data$pos, y = 1 - rlang::.data$BAF
+          x = pos, y = 1 - BAF
         ), alpha = .6, colour = "#67a9cf", shape = 46, show.legend = FALSE)
         p1 <- p1 + ggplot2::geom_point(
-          data = df1, mapping = ggplot2::aes(x = rlang::.data$pos, y = rlang::.data$BAF),
+          data = df1, mapping = ggplot2::aes(x = pos, y = BAF),
           alpha = .6, colour = "#ef8a62", shape = 46, show.legend = FALSE
         ) + ggplot2::theme_minimal()
         p1 <- p1 + ggplot2::labs(

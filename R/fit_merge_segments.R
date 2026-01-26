@@ -48,27 +48,27 @@ merge_segments <- function(
   # Function called when two segments have not been merged so there is no need to recheck those again
   update_neighbour <- function(subclones, INDEX, INDEX_N) {
     if (INDEX_N > INDEX) {
-      subclones$Next_checked[INDEX] <- TRUE
-      subclones$Prev_checked[INDEX_N] <- TRUE
+      subclones$next_checked[INDEX] <- TRUE
+      subclones$prev_checked[INDEX_N] <- TRUE
     } else {
-      subclones$Prev_checked[INDEX] <- TRUE
-      subclones$Next_checked[INDEX_N] <- TRUE
+      subclones$prev_checked[INDEX] <- TRUE
+      subclones$next_checked[INDEX_N] <- TRUE
     }
     return(subclones)
   }
   # Function called when two segments have been merged so we need to recheck its two neighbours
   updateAround <- function(subclones, INDEX) {
     if (INDEX > 1) {
-      subclones$Prev_checked[INDEX] <- FALSE
-      subclones$Next_checked[INDEX - 1] <- FALSE
+      subclones$prev_checked[INDEX] <- FALSE
+      subclones$next_checked[INDEX - 1] <- FALSE
     } else {
-      subclones$Prev_checked[INDEX] <- TRUE
+      subclones$prev_checked[INDEX] <- TRUE
     }
     if (INDEX < length(subclones)) {
-      subclones$Next_checked[INDEX] <- FALSE
-      subclones$Prev_checked[INDEX + 1] <- FALSE
+      subclones$next_checked[INDEX] <- FALSE
+      subclones$prev_checked[INDEX + 1] <- FALSE
     } else {
-      subclones$Next_checked[INDEX] <- TRUE
+      subclones$next_checked[INDEX] <- TRUE
     }
     return(subclones)
   }
@@ -76,16 +76,16 @@ merge_segments <- function(
   check_status <- function(subclones, INDEX, INDEX_N) {
     if (INDEX_N > INDEX) {
       # Largest segment (INDEX_N) is after smallest one (INDEX)
-      stopifnot(subclones$Next_checked[INDEX] == subclones$Prev_checked[INDEX_N])
-      if (subclones$Next_checked[INDEX] && subclones$Prev_checked[INDEX_N]) {
+      stopifnot(subclones$next_checked[INDEX] == subclones$prev_checked[INDEX_N])
+      if (subclones$next_checked[INDEX] && subclones$prev_checked[INDEX_N]) {
         return(TRUE)
       } else {
         return(FALSE)
       }
     } else {
       # Largest segment (INDEX_N) is before smallest one (INDEX)
-      stopifnot(subclones$Prev_checked[INDEX] == subclones$Next_checked[INDEX_N])
-      if (subclones$Prev_checked[INDEX] && subclones$Next_checked[INDEX_N]) {
+      stopifnot(subclones$prev_checked[INDEX] == subclones$next_checked[INDEX_N])
+      if (subclones$prev_checked[INDEX] && subclones$next_checked[INDEX_N]) {
         return(TRUE)
       } else {
         return(FALSE)
@@ -270,10 +270,10 @@ merge_segments <- function(
 
         if (nmin_curr == nmin_other || nmaj_curr == nmaj_other) {
           # Check sufficient data points
-          logr_curr <- logR_chr$logR[GenomicRanges::findOverlaps(subclones_chr[index], logR_chr)@to]
-          logr_other <- logR_chr$logR[GenomicRanges::findOverlaps(subclones_chr[index_n], logR_chr)@to]
-          baf_curr <- bafsegmented_chr$BAFphased[GenomicRanges::findOverlaps(subclones_chr[index], bafsegmented_chr)@to]
-          baf_other <- bafsegmented_chr$BAFphased[GenomicRanges::findOverlaps(subclones_chr[index_n], bafsegmented_chr)@to]
+          logr_curr <- logR_chr$logR[S4Vectors::subjectHits(GenomicRanges::findOverlaps(subclones_chr[index], logR_chr))]
+          logr_other <- logR_chr$logR[S4Vectors::subjectHits(GenomicRanges::findOverlaps(subclones_chr[index_n], logR_chr))]
+          baf_curr <- bafsegmented_chr$BAFphased[S4Vectors::subjectHits(GenomicRanges::findOverlaps(subclones_chr[index], bafsegmented_chr))]
+          baf_other <- bafsegmented_chr$BAFphased[S4Vectors::subjectHits(GenomicRanges::findOverlaps(subclones_chr[index_n], bafsegmented_chr))]
 
           if (sum(!is.na(logr_curr)) > 10 && sum(!is.na(logr_other)) > 10 &&
             sum(!is.na(baf_curr)) > 10 && sum(!is.na(baf_other)) > 10) {

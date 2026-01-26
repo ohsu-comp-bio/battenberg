@@ -35,7 +35,8 @@ calc_rho_psi_refit <- function(refBAF, refLogR, refMajor, refMinor, rho, gamma_p
 #' @export
 suggest_refit <- function(subclones_file, segment_chrom, segment_pos, new_nMaj, new_nMin, rho, gamma_param) {
   subclones <- data.table::fread(subclones_file, header = TRUE, stringsAsFactors = FALSE)
-  segment <- subclones[subclones$chr == segment_chrom & subclones$startpos <= segment_pos & subclones$endpos >= segment_pos, ]
+  segment <- subclones[!is.na(subclones$chr) & !is.na(subclones$startpos) & !is.na(subclones$endpos) &
+    subclones$chr == segment_chrom & subclones$startpos <= segment_pos & subclones$endpos >= segment_pos, ]
   segment_BAF <- segment$BAF
   segment_LogR <- segment$LogR
   return(calc_rho_psi_refit(segment_BAF, segment_LogR, new_nMaj, new_nMin, rho, gamma_param))
@@ -61,14 +62,14 @@ cnfit_to_refit_suggestions <- function(samplename, subclones_file, rho_psi_file,
   log_info("min_segment_size_mb: '{min_segment_size_mb}'")
   log_info("subclones$is_cna: '{subclones$is_cna}'")
 
-  if (any(subclones$len > min_segment_size_mb & subclones$is_cna)) {
+  if (any(!is.na(subclones$len) & !is.na(subclones$is_cna) & subclones$len > min_segment_size_mb & subclones$is_cna)) {
     # There are large scale alterations, save the top couple as suggestions
     rho_psi <- utils::read.table(rho_psi_file, header = TRUE, stringsAsFactors = FALSE)
     rho <- rho_psi["FRAC_GENOME", "rho"]
     psi_t <- rho_psi["FRAC_GENOME", "psi"]
 
     # Take only segments that are clonal and are an alteration
-    is_subclonal <- subclones$frac1_A < 1
+    is_subclonal <- !is.na(subclones$frac1_A) & subclones$frac1_A < 1
     subclones_clonal_cna <- subset(subclones, !is_subclonal & subclones$is_cna)
     subclones_clonal_cna <- subclones_clonal_cna[order(subclones_clonal_cna$len, decreasing = TRUE), ]
     if (nrow(subclones_clonal_cna) == 0) {

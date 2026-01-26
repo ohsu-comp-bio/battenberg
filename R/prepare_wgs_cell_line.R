@@ -420,14 +420,14 @@ cell_line_reconstruct_normal <- function(
         grDevices::pdf(paste0(TUMOURNAME, "_chr", i, "_", MIN_HET_DIST / 1e3, "k_based_pLOH_events.pdf"))
         suppressWarnings(
           for (s in seq_len(nrow(pLOH_regions))) {
-            sBAF <- ggplot2::ggplot(ohet, ggplot2::aes(rlang::.data$Position, rlang::.data$baf)) +
+            sBAF <- ggplot2::ggplot(ohet, ggplot2::aes(Position, baf)) +
               ggplot2::geom_jitter() +
               ggplot2::ylim(0, 1) +
               ggplot2::geom_vline(xintercept = c(pLOH_regions$start.pos[s], pLOH_regions$end.pos[s]), col = "red", linetype = "longdash") +
               ggplot2::xlim(pLOH_regions$start.pos[s] - LENGTH_ADJACENT, pLOH_regions$end.pos[s] + LENGTH_ADJACENT) +
               ggplot2::ggtitle(paste("pARM LOH region", s)) +
               ggplot2::labs(y = "BAF")
-            sLogR <- ggplot2::ggplot(logr, ggplot2::aes(rlang::.data$Position, rlang::.data$LogR)) +
+            sLogR <- ggplot2::ggplot(logr, ggplot2::aes(Position, LogR)) +
               ggplot2::geom_jitter() +
               ggplot2::ylim(-5.2, 1.2) +
               ggplot2::geom_vline(xintercept = c(pLOH_regions$start.pos[s], pLOH_regions$end.pos[s]), col = "red", linetype = "longdash") +
@@ -522,13 +522,13 @@ cell_line_reconstruct_normal <- function(
       grDevices::pdf(paste0(TUMOURNAME, "_chr", i, "_", MIN_HET_DIST / 1e3, "k_based_qLOH_events.pdf"))
       suppressWarnings(
         for (s in seq_len(nrow(qLOH_regions))) {
-          sBAF <- ggplot2::ggplot(ohet, ggplot2::aes(rlang::.data$Position, rlang::.data$baf)) +
+          sBAF <- ggplot2::ggplot(ohet, ggplot2::aes(Position, baf)) +
             ggplot2::geom_jitter() +
             ggplot2::ylim(0, 1) +
             ggplot2::geom_vline(xintercept = c(qLOH_regions$start.pos[s], qLOH_regions$end.pos[s]), col = "red", linetype = "longdash") +
             ggplot2::xlim(qLOH_regions$start.pos[s] - LENGTH_ADJACENT, qLOH_regions$end.pos[s] + LENGTH_ADJACENT) +
             ggplot2::ggtitle(paste("qARM LOH region", s))
-          sLogR <- ggplot2::ggplot(logr, ggplot2::aes(rlang::.data$Position, rlang::.data$LogR)) +
+          sLogR <- ggplot2::ggplot(logr, ggplot2::aes(Position, LogR)) +
             ggplot2::geom_jitter() +
             ggplot2::ylim(-5.2, 1.2) +
             ggplot2::geom_vline(xintercept = c(qLOH_regions$start.pos[s], qLOH_regions$end.pos[s]), col = "red", linetype = "longdash") +

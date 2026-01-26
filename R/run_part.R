@@ -40,7 +40,8 @@ run_with_error_handling <- function(iterator, func, libs, nthreads = 1) {
           msg <- paste(msg, sprintf("%d: %s", j, deparse(calls[[j]])), sep = "\n")
         }
         msg <- paste(msg, "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", sep = "\n")
-        log_failure("{msg}")
+        # Don't use log_failure here as it causes recursive errors in parallel workers
+        stop(msg, call. = FALSE)
       }
     )
   }

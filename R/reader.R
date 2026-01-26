@@ -207,11 +207,47 @@ read_beagle_output <- function(filename) {
 #' @noRd
 load_rho_psi_file <- function(rho_psi_file) {
   log_info("Reading rho and psi estimates from: {normalizePath(rho_psi_file, mustWork = FALSE)}")
-  rho_psi_info <- data.table::fread(rho_psi_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
-  # Always use best solution from grid search - reference segment sometimes gives strange results
-  rho <- rho_psi_info$rho[rownames(rho_psi_info) == "FRAC_GENOME"] # rho = tumour percentage (called tp in previous versions)
-  psit <- rho_psi_info$psi[rownames(rho_psi_info) == "FRAC_GENOME"] # psi of tumour cells
-  goodness <- rho_psi_info$distance[rownames(rho_psi_info) == "FRAC_GENOME"] # goodness of fit
+  # Use read.table to correctly handle row headers if present (standard Battenberg output)
+  rho_psi_info <- read.table(rho_psi_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+  # Access by row name "FRAC_GENOME"
+  rho <- rho_psi_info["FRAC_GENOME", "rho"]
+  psit <- rho_psi_info["FRAC_GENOME", "psi"]
+  goodness <- rho_psi_info["FRAC_GENOME", "distance"]
+
+  # Fallback if row access fails (e.g. if row names weren't set correctly)
+  if (is.na(rho) || length(rho) == 0) {
+    log_info("Row-name lookup for FRAC_GENOME failed. Searching all columns.")
+
+    # Search for "FRAC_GENOME" in any column
+    label_found <- FALSE
+    for (col_idx in seq_len(ncol(rho_psi_info))) {
+      row_idx <- which(rho_psi_info[[col_idx]] == "FRAC_GENOME")
+      if (length(row_idx) > 0) {
+        idx <- row_idx[1]
+        rho <- rho_psi_info[idx, "rho"]
+        psit <- rho_psi_info[idx, "psi"]
+        goodness <- rho_psi_info[idx, "distance"]
+        label_found <- TRUE
+        log_info("Found FRAC_GENOME in column {col_idx}, row {idx}.")
+        break
+      }
+    }
+
+    if (!label_found) {
+      # Last row is traditionally FRAC_GENOME in Battenberg
+      idx <- nrow(rho_psi_info)
+      if (idx > 0) {
+        log_info("FRAC_GENOME label not found. defaulting to last row (row {idx}).")
+        rho <- rho_psi_info[idx, "rho"]
+        psit <- rho_psi_info[idx, "psi"]
+        goodness <- rho_psi_info[idx, "distance"]
+      }
+    }
+  }
+
+  if (is.na(rho)) log_failure("Failed to load rho (purity) from {rho_psi_file}")
+
   return(list(rho = rho, psit = psit, goodness = goodness))
 }
 

@@ -24,6 +24,8 @@
 #' @param chr_names A vector with chromosome names used for plotting
 #' @param analysis A String representing the type of analysis to be run, this determines whether the distance figure is produced (Default paired)
 #' @param nthreads The number of paralel processes to run
+#' @param n_neighbors_search Number of top grid points to search (integer). Set to Inf for exhaustive search. If NULL, only local minima are searched.
+#' @param local_min_window_size Window size for local minimum detection (Default 7)
 #' @return A list with fields psi, rho and ploidy
 #' @export
 # the limit on rho is lenient and may lead to spurious solutions
@@ -37,11 +39,19 @@ runASCAT <- function(
   gamma = 0.55, allow100percent,
   reliabilityFile = NA, min_ploidy = 1.6,
   max_ploidy = 4.8, min_rho = 0.1,
-  max_rho = 1.0, min_goodness = 63,
+  max_rho = 1.0, min_goodness = 0.63,
   uninformative_baf_threshold = 0.51,
   chr_names, analysis = "paired",
+  local_min_window_size = 7,
+  n_neighbors_search = NULL,
   nthreads = 1
 ) {
+  # Validate parameters
+  if (!is.numeric(local_min_window_size) || local_min_window_size < 3 || local_min_window_size %% 2 == 0) {
+    log_failure("local_min_window_size must be an odd integer >= 3, got: {local_min_window_size}")
+    stop("Invalid local_min_window_size")
+  }
+
   # Setup inputs and segments
   ch <- chromosomes
   b <- bafsegmented
@@ -50,10 +60,10 @@ runASCAT <- function(
   # Adapt the rho/psi boundaries
   dist_min_psi <- max(min_ploidy - 0.6, 0)
   dist_max_psi <- max_ploidy + 0.6
-  dist_min_rho <- max(min_rho - 0.1, 0.05)
-  dist_max_rho <- max_rho + 0.1
+  dist_min_rho <- max(min_rho - 0.03, 0.05)
+  dist_max_rho <- max_rho + 0.03
 
-  s <- make_segments(r, b)
+  s <- make_segments_internal(r, b)
   dist_matrix_info <- create_distance_matrix(
     s, dist_choice, gamma,
     uninformative_baf_threshold = uninformative_baf_threshold,
@@ -76,25 +86,36 @@ runASCAT <- function(
   # Ensure we are always searching for a minimum
   if (!minimise) d <- -d
 
-  # VECTORIZED LOCAL MINIMA SEARCH (Pixel-perfect replacement for 7x7 loop)
+  # VECTORIZED LOCAL MINIMA SEARCH
   nr <- nrow(d)
   nc <- ncol(d)
   is_local_min <- matrix(TRUE, nrow = nr, ncol = nc)
 
-  # Constrain search to the interior to match 4:(dim-3) logic
-  row_range <- 4:(nr - 3)
-  col_range <- 4:(nc - 3)
+  # Check half window size
+  half_window <- (local_min_window_size - 1) / 2
 
-  # Check every neighbor in the 7x7 window (48 neighbors)
-  for (dx in -3:3) {
-    for (dy in -3:3) {
-      if (dx == 0 && dy == 0) next
-      is_local_min[row_range, col_range] <- is_local_min[row_range, col_range] &
-        (d[row_range, col_range] < d[row_range + dx, col_range + dy])
+  exhaustive_mode <- !is.null(n_neighbors_search) && (is.infinite(n_neighbors_search) || n_neighbors_search > 0)
+
+  if (exhaustive_mode) {
+    # In exhaustive mode, all points within boundaries are candidates
+    row_range <- (half_window + 1):(nr - half_window)
+    col_range <- (half_window + 1):(nc - half_window)
+  } else {
+    # Constrain search to the interior to match window logic
+    row_range <- (half_window + 1):(nr - half_window)
+    col_range <- (half_window + 1):(nc - half_window)
+
+    # Check every neighbor in the window
+    for (dx in -half_window:half_window) {
+      for (dy in -half_window:half_window) {
+        if (dx == 0 && dy == 0) next
+        is_local_min[row_range, col_range] <- is_local_min[row_range, col_range] &
+          (d[row_range, col_range] < d[row_range + dx, col_range + dy])
+      }
     }
   }
 
-  # Zero out the margins to match original loop boundaries
+  # Zero out the margins
   is_local_min[-row_range, ] <- FALSE
   is_local_min[, -col_range] <- FALSE
 
@@ -129,8 +150,8 @@ runASCAT <- function(
       perczeroAbb <- (sum(is_nA_zero * s[, "length"] * is_not_balanced) + sum(is_nB_zero * s[, "length"] * is_not_balanced)) / weight_unbalanced
       if (is.na(perczeroAbb)) perczeroAbb <- 0
 
-      # Goodness of fit calculation
-      fit <- if (minimise) (1 - m / TheoretMaxdist) * 100 else -m / TheoretMaxdist * 100
+      # Goodness of fit calculation (0-1 scale)
+      fit <- if (minimise) (1 - m / TheoretMaxdist) else -m / TheoretMaxdist
 
       # Return data if it meets primary constraints (percentzero checks applied later if allow100percent is used)
       return(list(m = m, i = i, j = j, ploidy = ploidy, fit = fit, pz = percentzero, pza = perczeroAbb, rho = rho, psi = psi))
@@ -150,26 +171,40 @@ runASCAT <- function(
     zero_constraint = 0
   )
 
+  # Log all candidates before filtering for debugging
+  if (!is.null(candidates)) {
+    log_info("DEBUG: Found {length(candidates)} candidate solutions:")
+    for (i in seq_along(candidates)) {
+      cand <- candidates[[i]]
+      log_info("  Cand {i}: rho={round(cand$rho, 3)}, psi={round(cand$psi, 3)}, dist={round(cand$m, 4)}, goodness={round(cand$fit * 100, 2)}%, pz={round(cand$pz, 4)}, pza={round(cand$pza, 4)}")
+    }
+  }
+
   # Filtering based on standard Battenberg criteria with logging
   valid_optima <- list()
   if (!is.null(candidates)) {
     valid_optima <- Filter(function(x) {
       if (x$ploidy < min_ploidy || x$ploidy > max_ploidy) {
+        log_info("  DEBUG: Rejected cand (rho={round(x$rho, 2)}) due to ploidy {round(x$ploidy, 2)} (bounds: {min_ploidy}-{max_ploidy})")
         debug_stats$ploidy_bounds <<- debug_stats$ploidy_bounds + 1
         return(FALSE)
       }
       if (x$rho < min_rho) {
+        log_info("  DEBUG: Rejected cand (rho={round(x$rho, 2)}) due to rho < {min_rho}")
         debug_stats$rho_bounds <<- debug_stats$rho_bounds + 1
         return(FALSE)
       }
       if (x$fit < min_goodness) {
+        log_info("  DEBUG: Rejected cand (rho={round(x$rho, 2)}) due to goodness {round(x$fit * 100, 2)}% < {round(min_goodness * 100, 2)}%")
         debug_stats$low_goodness <<- debug_stats$low_goodness + 1
         return(FALSE)
       }
       if (!(x$pz > 0.01 || x$pza > 0.1)) {
+        log_info("  DEBUG: Rejected cand (rho={round(x$rho, 2)}) due to zero constraint (pz={round(x$pz, 3)}, pza={round(x$pza, 3)})")
         debug_stats$zero_constraint <<- debug_stats$zero_constraint + 1
         return(FALSE)
       }
+      log_info("  DEBUG: Accepted cand (rho={round(x$rho, 2)})")
       return(TRUE)
     }, candidates)
   }
@@ -217,7 +252,7 @@ runASCAT <- function(
     }
 
     log_info("DEBUG: After filtering, {nropt} valid solutions remain")
-    log_info("DEBUG: Selected solution: rho={round(rho_opt1, 3)}, psi={round(psi_opt1, 3)}, ploidy={round(ploidy_opt1, 3)}, goodness={round(goodness_of_fit_opt1, 2)}%")
+    log_info("DEBUG: Selected solution: rho={round(rho_opt1, 3)}, psi={round(psi_opt1, 3)}, ploidy={round(ploidy_opt1, 3)}, goodness={round(goodness_of_fit_opt1 * 100, 2)}%")
   } else {
     writeLines("no copy number solutions found", con = cnaStatusFile)
     log_info("No suitable copy number solution found.")
@@ -317,7 +352,7 @@ runASCAT <- function(
         ASCAT::ascat.plotAscatProfile(
           n1all = nA, n2all = nB, heteroprobes = TRUE,
           ploidy = ploidy_opt1, rho = rho_opt1,
-          goodnessOfFit = goodness_of_fit_opt1,
+          goodnessOfFit = goodness_of_fit_opt1 * 100,
           nonaberrant = FALSE, ch = ch,
           lrr = lrr, bafsegmented = bafsegmented,
           chrs = chr_names
@@ -335,7 +370,7 @@ runASCAT <- function(
         )
         ASCAT::ascat.plotNonRounded(
           ploidy = ploidy_opt1, rho = rho_opt1,
-          goodnessOfFit = goodness_of_fit_opt1,
+          goodnessOfFit = goodness_of_fit_opt1 * 100,
           nonaberrant = FALSE, nAfull = nAfull,
           nBfull = nBfull, bafsegmented = bafsegmented,
           ch = ch, lrr = lrr, chrs = chr_names

@@ -73,16 +73,24 @@ run_clonal_ASCAT <- function(
   siglevel_LogR <- -0.01
   maxdist_LogR <- 1
 
-  ininitial_bounds <- list(psi_min = psi_min_initial, psi_max = psi_max_initial, rho_min = rho_min_initial, rho_max = rho_max_initial)
+  initial_bounds <- list(psi_min = psi_min_initial, psi_max = psi_max_initial, rho_min = rho_min_initial, rho_max = rho_max_initial)
 
-  new_bounds <- get_new_bounds(input_optimum_pair, ininitial_bounds)
+  new_bounds <- get_new_bounds(input_optimum_pair, initial_bounds)
 
 
   ch <- chromosomes
   b <- bafsegmented
   r <- lrrsegmented[names(bafsegmented)]
 
-  s <- get_segment_info(lrrsegmented, segBAF_table)
+  # CRITICAL FIX: Subset LRR using PROBE NAMES (names of bafsegmented)
+  # segBAF_table rownames are numeric indices (1..N) which causes mismatch with named lrrsegmented vector
+  s <- get_segment_info(lrrsegmented[names(bafsegmented)], segBAF_table)
+  log_debug("get_segment_info returned: {nrow(s)} rows, {ncol(s)} columns")
+  if (nrow(s) > 0) {
+    log_debug("get_segment_info head: {paste(head(s, 1), collapse=', ')}")
+  } else {
+    log_debug("get_segment_info returned empty matrix")
+  }
 
   if (is.null(s) || nrow(s) == 0) {
     log_failure("No valid segments found in run_clonal_ASCAT. Cannot proceed with clonal copy number fitting.")
@@ -90,6 +98,7 @@ run_clonal_ASCAT <- function(
 
   # Make sure no segment of length 1 remains
   s <- s[s[, 3] > 1, , drop = FALSE]
+  log_debug("After filtering length > 1: {nrow(s)} rows")
   if (nrow(s) == 0) {
     log_failure("No segments with length > 1 found in run_clonal_ASCAT.")
   }
@@ -161,10 +170,17 @@ run_clonal_ASCAT <- function(
   #########################################################
 
   if (nropt > 0) {
-    rho <- rho_without_ref
-    psi <- psi_without_ref
-    ploidy <- ploidy_without_ref
-    goodness_of_fit <- goodness_of_fit_without_ref * 100
+    if (is_ref_better) {
+      rho <- rho_opt1
+      psi <- psi_opt1
+      ploidy <- ploidy_opt1
+      goodness_of_fit <- goodness_of_fit_opt1
+    } else {
+      rho <- rho_without_ref
+      psi <- psi_without_ref
+      ploidy <- ploidy_without_ref
+      goodness_of_fit <- goodness_of_fit_without_ref
+    }
     nAfull <- (rho - 1 - (b - 1) * 2^(r / gamma_param) *
       ((1 - rho) * 2 + rho * psi)) / rho
     nBfull <- (rho - 1 + b * 2^(r / gamma_param) *
@@ -209,7 +225,7 @@ run_clonal_ASCAT <- function(
       n1all = nA, n2all = nB,
       heteroprobes = TRUE,
       ploidy = ploidy, rho = rho,
-      goodnessOfFit = goodness_of_fit,
+      goodnessOfFit = goodness_of_fit * 100,
       nonaberrant = FALSE,
       ch = ch, lrr = lrr,
       bafsegmented = bafsegmented,
@@ -229,7 +245,7 @@ run_clonal_ASCAT <- function(
     }
     ASCAT::ascat.plotNonRounded(
       ploidy = ploidy, rho = rho,
-      goodnessOfFit = goodness_of_fit,
+      goodnessOfFit = goodness_of_fit * 100,
       nonaberrant = FALSE, nAfull = nAfull,
       nBfull = nBfull, bafsegmented = bafsegmented,
       ch = ch, lrr = lrr, chrs = chr_names
@@ -263,12 +279,13 @@ run_clonal_ASCAT <- function(
     list(
       output_optimum_pair = output_optimum_pair,
       output_optimum_pair_without_ref = output_optimum_pair_without_ref,
-      distance = distance.from.ref.seg,
-      distance_without_ref = best.distance,
+      distance = goodness_of_fit_opt1,
+      distance_without_ref = goodness_of_fit_without_ref,
       minimise = minimise,
-      is_ref_better = is_ref_better
+      is_ref_better = is_ref_better,
+      dist_matrix_info = dist_matrix_info
     )
-  ) # kjd 20-2-2014, adapted by DCW 140314
+  )
 }
 
 #' Function extends the ASCAT \code{make_segments} function to make segments
@@ -280,16 +297,20 @@ get_segment_info <- function(segLogR, segBAF_table) {
   # Column 5: Segmented BAF (b), Column 4: Phased BAF (BAFke)
   col_names <- names(segBAF_table)
 
-  # Determine BAF column
-  baf_col <- if ("BAFseg" %in% col_names) "BAFseg" else if ("BAF" %in% col_names) "BAF" else 5
-
-  # Determine Phased BAF column
+  # Identify BAF columns: Segmented BAF is typically col 5.
+  # If col_names is available, we look for "BAFseg" or just use col 5 since fit_copy_number renamed it.
+  baf_col <- if ("BAFseg" %in% col_names) "BAFseg" else 5
   phased_col <- if ("BAFphased" %in% col_names) "BAFphased" else 4
 
-  b_raw <- if (is.numeric(baf_col)) segBAF_table[, baf_col] else segBAF_table[[baf_col]]
-  b_phased <- if (is.numeric(phased_col)) segBAF_table[, phased_col] else segBAF_table[[phased_col]]
+  b_raw <- segBAF_table[[baf_col]]
+  b_phased <- segBAF_table[[phased_col]]
 
-  # Match original make_segments(r, b) call
+  if (length(segLogR) != length(b_raw)) {
+    log_failure("Input length mismatch in get_segment_info: segLogR={length(segLogR)}, b_raw={length(b_raw)}")
+    stop("Input length mismatch in get_segment_info")
+  }
+
+  # Match original make_segments(r, b) call - NO ROUNDING
   pcf_segments <- make_segments(segLogR, b_raw)
 
   # To match 'which(segBAF_table[, 5] == BAF_req)' exactly:
@@ -301,8 +322,14 @@ get_segment_info <- function(segLogR, segBAF_table) {
   all_sds <- as.numeric(collapse::fsd(b_phased, val_g))
   all_sizes <- as.numeric(collapse::fnobs(b_phased, val_g))
 
-  # Map the calculated stats back to each segment
-  match_idx <- match(pcf_segments[, "b"], val_g$groups)
+  # Map the calculated stats back to each segment using start indices (O(1) mapping, no float matching)
+  # Calculate cumulative lengths to find the start of each segment in the original vector
+  cum_len <- cumsum(pcf_segments[, "length"])
+  starts <- c(1, head(cum_len, -1) + 1)
+
+  # val_g$group.id contains the group ID for every probe.
+  # Since pcf_segments were created from the same b_raw, we just pick the group_id at the start of each segment.
+  match_idx <- val_g$group.id[starts]
 
   # Build final matrix
   segs <- cbind(
@@ -319,36 +346,38 @@ get_segment_info <- function(segLogR, segBAF_table) {
 #' Optimized Segment Maker - Returns 3 columns like ASCAT original
 #' @noRd
 make_segments <- function(r, b) {
-  # Fast removal of NAs
-  keep <- which(!is.na(r) & !is.na(b))
+  m <- matrix(ncol = 2, nrow = length(b))
+  m[, 1] <- r
+  m[, 2] <- b
+  m <- as.matrix(na.omit(m))
 
-  if (length(keep) == 0) {
-    return(matrix(
-      nrow = 0, ncol = 3,
-      dimnames = list(NULL, c("r", "b", "length"))
-    ))
+  if (nrow(m) == 0) {
+    return(matrix(nrow = 0, ncol = 3, dimnames = list(NULL, c("r", "b", "length"))))
   }
 
-  r_clean <- r[keep]
-  b_clean <- b[keep]
-
-  # 1. Robust Grouping
-  # We round to 4 decimal places to avoid floating point noise breaking segments
-  ids <- data.table::rleid(round(r_clean, 4), round(b_clean, 4))
-
-  # 2. Ultra-fast Aggregation using collapse
-  # We use ffirst to get the segment values and fnobs for the count
-  # g = ids tells collapse to perform these operations by group in C
-
-  # pre-allocate matrix for speed
-  n_seg <- ids[length(ids)]
-  pcf_segments <- matrix(nrow = n_seg, ncol = 3)
+  pcf_segments <- matrix(ncol = 3, nrow = dim(m)[1])
   colnames(pcf_segments) <- c("r", "b", "length")
 
-  # Populate columns - ONLY r, b, length like ASCAT original
-  pcf_segments[, "r"] <- collapse::ffirst(r_clean, g = ids)
-  pcf_segments[, "b"] <- collapse::ffirst(b_clean, g = ids)
-  pcf_segments[, "length"] <- as.numeric(collapse::fnobs(r_clean, g = ids))
+  index <- 0
+  previousb <- -1
+  previousr <- 1E10
 
+  for (i in seq_len(dim(m)[1])) {
+    # Use a small tolerance for floating point comparisons to ensure segmented values collapse correctly
+    if (abs(m[i, 2] - previousb) > 1e-10 || abs(m[i, 1] - previousr) > 1e-10) {
+      index <- index + 1
+      count <- 1
+      pcf_segments[index, "r"] <- m[i, 1]
+      pcf_segments[index, "b"] <- m[i, 2]
+    } else {
+      count <- count + 1
+    }
+    pcf_segments[index, "length"] <- count
+    previousb <- m[i, 2]
+    previousr <- m[i, 1]
+  }
+
+  # Clean up the matrix to remove unused pre-allocated rows
+  pcf_segments <- pcf_segments[seq_len(index), , drop = FALSE]
   return(pcf_segments)
 }

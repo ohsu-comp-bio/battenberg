@@ -40,6 +40,8 @@ prioritizeCopyNumbers <- function(rho, psi, BAF_req, nMajor, nMinor, full = TRUE
 
   # Helper to fill offsets for a logical mask
   fill_offsets <- function(mask, om1, on1, om2, on2) {
+    # Guard against NAs in mask
+    mask[is.na(mask)] <- FALSE
     if (any(mask)) {
       m1[mask, ] <<- sweep(matrix(om1, sum(mask), 6, byrow = TRUE), 1, y[mask], "+")
       n1[mask, ] <<- sweep(matrix(on1, sum(mask), 6, byrow = TRUE), 1, x[mask], "+")
@@ -82,6 +84,7 @@ prioritizeCopyNumbers <- function(rho, psi, BAF_req, nMajor, nMinor, full = TRUE
 
   # Validation: Avoid negative CNs
   invalid <- (m1 < 0 | n1 < 0 | m2 < 0 | n2 < 0)
+  invalid[is.na(invalid)] <- TRUE # Treat NAs as invalid
   m1[invalid] <- NA
   n1[invalid] <- NA
   m2[invalid] <- NA

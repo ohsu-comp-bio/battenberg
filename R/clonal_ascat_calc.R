@@ -11,8 +11,16 @@ calc_Pvalue_t_twotailed <- function(
 ) {
   tvar <- (sample_mean - mu_pop) * sqrt(sample_size) / sample_SD
 
-  # We use abs(tvar) to always get the upper tail, then multiply by 2
-  pval <- 2 * stats::pt(abs(tvar), df = sample_size - 1, lower.tail = FALSE)
+  # Guard against df <= 0 (sample_size <= 1)
+  pval <- rep(0, length(tvar))
+  valid <- !is.na(tvar) & (sample_size > 1)
+
+  if (any(valid)) {
+    pval[valid] <- 2 * stats::pt(abs(tvar[valid]), df = sample_size[valid] - 1, lower.tail = FALSE)
+  }
+
+  # Apply maxdist override
+  pval[is.na(pval)] <- 0
   pval[abs(sample_mean - mu_pop) < max_dist] <- 1
   return(pval)
 }
@@ -229,9 +237,20 @@ studentise <- function(sample_size, sample_mean, sample_sd, mu) {
 #' @noRd
 recalc_psi_t <- function(psi, rho, gamma_param, lrrsegmented, segBAF_table, siglevel_BAF, maxdist_BAF, include_subcl_segments = TRUE) {
   # Create segments of constant BAF/LogR
-  s <- get_segment_info(lrrsegmented[rownames(segBAF_table)], segBAF_table)
-  # Make sure no segment of length 1 remains - TODO: this should not occur and needs to be prevented upstream
-  s <- s[s[, 3] > 1, ]
+  # Align lrrsegmented with segBAF_table using names if available
+  lrr_aligned <- if (!is.null(names(lrrsegmented)) && !is.null(rownames(segBAF_table))) {
+    lrrsegmented[rownames(segBAF_table)]
+  } else {
+    lrrsegmented
+  }
+
+  s <- get_segment_info(lrr_aligned, segBAF_table)
+  # Make sure no segment of length 1 remains
+  s <- s[!is.na(s[, 3]) & s[, 3] > 1, , drop = FALSE]
+
+  if (nrow(s) == 0) {
+    return(NA)
+  }
 
   # Check which segments are clonal with this rho/psi configuration
   segment_info <- is_segment_clonal(
@@ -329,4 +348,52 @@ calc_batch_standardised_errors <- function(s, rho, psi, gamma_param) {
   tvar <- ifelse(is_valid, (s[, "mean"] - mu) * sqrt(s[, "size"]) / s[, "sd"], 0)
 
   return(tvar)
+}
+
+# Optimized batch version of log likelihood ratio
+#' @export
+calc_batch_ln_likelihood_ratios <- function(s, read_depth, rho, psi, gamma_param) {
+  # s contains columns: r (LogR), b (BAF_req), length, size, mean, sd
+  pooled_BAF_size <- read_depth * s[, "size"]
+  LogR <- s[, "r"]
+  LogR[is.na(LogR)] <- 0
+
+  # Pre-calculate shared terms
+  factor <- 2^(LogR / gamma_param)
+  term_psi <- ((1 - rho) * 2 + rho * psi)
+
+  nMajor_raw <- (rho - 1 + s[, "b"] * factor * term_psi) / rho
+  nMinor_raw <- (rho - 1 + (1 - s[, "b"]) * factor * term_psi) / rho
+
+  nMajor <- pmax(0.01, nMajor_raw)
+  nMinor <- pmax(0.01, nMinor_raw)
+
+  # Get nearest edges (best option only for likelihood)
+  nearest_edges <- prioritizeCopyNumbers(
+    rho = rho, psi = psi, BAF_req = s[, "b"],
+    nMajor = nMajor, nMinor = nMinor, full = FALSE
+  )
+
+  # corners 1 and 2
+  nMaj_opts <- nearest_edges$nMaj
+  nMin_opts <- nearest_edges$nMin
+
+  # Calculate BAF levels for both corners
+  calc_lev <- function(nM, nm) {
+    den <- (2 - 2 * rho + rho * (nM + nm))
+    ifelse(den != 0, (1 - rho + rho * nM) / den, 0.5)
+  }
+
+  lev1 <- calc_lev(nMaj_opts[, 1], nMin_opts[, 1])
+  lev2 <- calc_lev(nMaj_opts[, 2], nMin_opts[, 2])
+
+  # Calculate likelihoods for both
+  L1 <- calc_binomial_prob(s[, "mean"], pooled_BAF_size, lev1)
+  L2 <- calc_binomial_prob(s[, "mean"], pooled_BAF_size, lev2)
+
+  L_best <- pmax(L1, L2)
+  L_second <- pmin(L1, L2)
+
+  ln_lratio <- ifelse(L_best > 0 & L_second > 0, log(L_best) - log(L_second), 0)
+  return(ln_lratio)
 }

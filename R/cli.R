@@ -153,6 +153,22 @@ battenberg_cli <- function() {
     optparse::make_option(c("--enhanced_grid_search"),
       type = "logical", default = FALSE, action = "store_true"
     ),
+    optparse::make_option(c("--n_neighbors_search"),
+      type = "numeric", default = NULL,
+      help = "Number of top grid points to search (integer). Set to Inf for exhaustive search. If NULL, only local minima are searched."
+    ),
+    optparse::make_option(c("--grid_psi_step"),
+      type = "double", default = 0.05,
+      help = "Grid spacing for psi (ploidy) dimension, default 0.05"
+    ),
+    optparse::make_option(c("--grid_rho_step"),
+      type = "double", default = 0.01,
+      help = "Grid spacing for rho (cellularity) dimension, default 0.01"
+    ),
+    optparse::make_option(c("--local_min_window_size"),
+      type = "integer", default = 7,
+      help = "Window size for local minimum detection (3, 5, 7, 9, etc.), larger = stricter. Default 7."
+    ),
     optparse::make_option(c("--preprocessed_data_dir"),
       type = "character", default = NA
     ),
@@ -235,12 +251,14 @@ battenberg_cli <- function() {
   parser <- optparse::OptionParser(option_list = option_list)
   opt <- optparse::parse_args(parser)
 
+  log_setup(opt$logging_path, opt$verbose_logging)
+
   # Remove the 'help' flag which optparse adds automatically
   opt$help <- NULL
 
-  log_info(strrep("=", 60))
+  log_info(strrep("=", 120))
   log_info("BATTENBERG CLI: EXECUTION PARAMETERS")
-  log_info(strrep("=", 60))
+  log_info(strrep("=", 120))
 
   # Sort names so they are easy to find in the log
   opt_names <- sort(names(opt))
@@ -249,7 +267,7 @@ battenberg_cli <- function() {
     val <- opt[[name]]
     log_info(sprintf("%-40s : %s", name, paste(val, collapse = ", ")))
   }
-  log_info(strrep("=", 60))
+  log_info(strrep("=", 120))
 
   # Execute main function
   do.call(battenberg, opt)
