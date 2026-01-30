@@ -311,7 +311,9 @@ run_clonal_ASCAT <- function(
   # If there aren't any clonally fit segments, the above yields NA. In this case, revert to the original grid search psi_t
   if (is.na(psi_t)) {
     log_info("Recalculated psi_t was NA, reverting to grid search solution. This occurs when no segment could be fit with a clonal state, check sample for contamination")
-    psi_t <- psi_without_ref
+    psi_t <- input_optimum_pair$psi
+    rho_without_ref <- input_optimum_pair$rho
+    ploidy_without_ref <- input_optimum_pair$ploidy
   }
 
   output_optimum_pair <- list(psi = psi_opt1, rho = rho_opt1, ploidy = ploidy_opt1)

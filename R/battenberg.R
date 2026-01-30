@@ -718,7 +718,7 @@ battenberg <- function(
         "Parallel Execution: concurrent_samples={min(nsamples, chromosomes_in_parallel)}, inner_threads={inner_threads} (per sample)"
       )
       # Parallel workers will now report their index and error details if they fail
-      fit_copy_number(
+      res_fit <- fit_copy_number(
         samplename = samplename[sampleidx],
         outputfile_prefix = paste(samplename[sampleidx], "_", sep = ""),
         inputfile_baf_segmented = paste(samplename[sampleidx], ".BAFsegmented.txt", sep = ""),
@@ -745,6 +745,11 @@ battenberg <- function(
         grid_rho_step = grid_rho_step,
         local_min_window_size = local_min_window_size
       )
+
+      if (is.null(res_fit)) {
+        log_info("Skipping subclonal analysis for {samplename[sampleidx]} due to fit failure.")
+        return(NULL)
+      }
 
       # Fit a second CN state (subclonal)
       log_info("call_subclones")

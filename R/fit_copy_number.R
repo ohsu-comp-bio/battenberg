@@ -319,6 +319,7 @@ fit_copy_number <- function(
     paste0(outputfile_prefix, "rho_and_psi.txt"),
     sep = "\t", quote = FALSE, row.names = TRUE, col.names = NA
   )
+  return(ascat_optimum_pair)
 }
 
 #' Fit subclonal copy number
@@ -491,6 +492,13 @@ call_subclones <- function(
 
     # Calculate goodness as the % of genome that is clonal
     goodness <- 1 - (subclonal_len / total_genome_len)
+
+    # Ensure goodness is valid and finite
+    if (is.na(goodness) || is.infinite(goodness)) {
+      goodness <- 1.0
+    } else {
+      goodness <- max(0, min(1, goodness))
+    }
   }
 
   log_info("PGA.is.clonal = {sprintf('%2.1f%%', goodness * 100)}")
@@ -808,15 +816,21 @@ determine_copynumber <- function(BAFvals, LogRvals, rho, psi, gamma, ctrans,
       nmi2 <- all_edges[, 4]
 
       # Vectorized math for tau across all 6 options
-      tau <- (1 - rho + rho * nM2 - 2 * l * (1 - rho) - l * rho * (nmi2 + nM2)) /
-        (l * rho * (nmi1 + nM1) - l * rho * (nmi2 + nM2) - rho * nM1 + rho * nM2)
+      denom_tau <- (l * rho * (nmi1 + nM1) - l * rho * (nmi2 + nM2) - rho * nM1 + rho * nM2)
+      tau <- (1 - rho + rho * nM2 - 2 * l * (1 - rho) - l * rho * (nmi2 + nM2)) / denom_tau
+
+      # Clip tau to [0, 1] and handle NAs/Infs
+      tau[is.na(tau) | is.infinite(tau)] <- 0
+      tau <- pmax(0, pmin(1, tau))
 
       sdl <- sd_BAFke / sqrt(n_ke)
 
       # Optimized Delta method for sdtau
       calc_sdtau <- function(curr_l) {
-        (1 - rho + rho * nM2 - 2 * curr_l * (1 - rho) - curr_l * rho * (nmi2 + nM2)) /
-          (curr_l * rho * (nmi1 + nM1) - curr_l * rho * (nmi2 + nM2) - rho * nM1 + rho * nM2)
+        d <- (curr_l * rho * (nmi1 + nM1) - curr_l * rho * (nmi2 + nM2) - rho * nM1 + rho * nM2)
+        v <- (1 - rho + rho * nM2 - 2 * curr_l * (1 - rho) - curr_l * rho * (nmi2 + nM2)) / d
+        v[is.na(v) | is.infinite(v)] <- 0
+        pmax(0, pmin(1, v))
       }
       sdtau <- (abs(calc_sdtau(l + sdl) - tau) + abs(calc_sdtau(l - sdl) - tau)) / 2
 
@@ -826,8 +840,14 @@ determine_copynumber <- function(BAFvals, LogRvals, rho, psi, gamma, ctrans,
 
       opt_data <- vector("list", 6)
       for (opt in seq_along(tau)) {
-        pFrac <- (1 - rho + rho * nM2[opt] - 2 * boot_means * (1 - rho) - boot_means * rho * (nmi2[opt] + nM2[opt])) /
-          (boot_means * rho * (nM1[opt] + nmi1[opt]) - boot_means * rho * (nM2[opt] + nmi2[opt]) - rho * nM1[opt] + rho * nM2[opt])
+        # Vectorized pFrac calculation with safety
+        denom <- (boot_means * rho * (nM1[opt] + nmi1[opt]) - boot_means * rho * (nM2[opt] + nmi2[opt]) - rho * nM1[opt] + rho * nM2[opt])
+
+        pFrac <- (1 - rho + rho * nM2[opt] - 2 * boot_means * (1 - rho) - boot_means * rho * (nmi2[opt] + nM2[opt])) / denom
+
+        # Clip pFrac to [0, 1] and handle NAs/Infs
+        pFrac[is.na(pFrac) | is.infinite(pFrac)] <- 0
+        pFrac <- pmax(0, pmin(1, pFrac))
 
         o_frac <- sort(pFrac)
         opt_data[[opt]] <- c(

@@ -329,27 +329,17 @@ runASCAT_enhanced <- function(
         }
       } else {
         # Original local minima search (when n_neighbors_search is NULL)
-        search_order_100 <- create_smart_search_order(d_mod, smart_ordering, FALSE, minimise)
-
-        # Pre-compute local minima for d_mod (interior only)
-        is_local_min_mod <- matrix(FALSE, nrow = nr, ncol = nc)
-        if (nr >= local_min_window_size && nc >= local_min_window_size) {
-          is_local_min_mod[row_range, col_range] <- TRUE
-          for (dx in -half_window:half_window) {
-            for (dy in -half_window:half_window) {
-              if (dx == 0 && dy == 0) next
-              is_local_min_mod[row_range, col_range] <- is_local_min_mod[row_range, col_range] &
-                (d_mod[row_range, col_range] <= d_mod[row_range + dx, col_range + dy])
-            }
-          }
-        }
+        search_order_100 <- create_smart_search_order(d_mod, smart_ordering, FALSE, minimise,
+          local_min_window_size = local_min_window_size
+        )
 
         if (nrow(search_order_100) > 0) {
           for (idx in seq_len(nrow(search_order_100))) {
             i <- search_order_100[idx, 1]
             j <- search_order_100[idx, 2]
 
-            if (!is_local_min_mod[i, j]) next
+            # We don't need a redundant local min check here as create_smart_search_order
+            # already handles it correctly based on the 'minimise' flag.
 
             m <- d_mod[i, j]
             solution <- calculate_solution_fast(

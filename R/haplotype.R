@@ -356,7 +356,7 @@ concatenate_baf_files <- function(
   # Write output
   vroom::vroom_write(
     combined,
-    path = output_file,
+    file = output_file,
     delim = "\t",
     na = "NA",
     quote = "none"
