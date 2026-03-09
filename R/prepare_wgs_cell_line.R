@@ -21,10 +21,12 @@ cell_line_baf_logR <- function(TUMOURNAME, g1000alleles_prefix, chrom_names) {
     if (!file.exists(ac_file) || file.size(ac_file) == 0) {
       log_failure("Allele count file '{ac_file}' is missing or empty. Preprocessing cannot continue.")
     }
-    ac <- data.table::fread(ac_file, header = FALSE, stringsAsFactors = FALSE)
+    ac <- data.table::fread(ac_file, header = FALSE, sep = "auto", stringsAsFactors = FALSE)
     if (nrow(ac) == 0) {
       log_failure("Allele count file '{ac_file}' contains no data.")
     }
+    # Ensure column 2 (Position) is numeric for sorting
+    if (!is.numeric(ac[[2]])) ac[[2]] <- as.numeric(ac[[2]])
     data.table::setorder(ac, V2)
     AC[[chr]] <- ac
     log_info("length(AC): '{length(AC)}'")
@@ -34,15 +36,16 @@ cell_line_baf_logR <- function(TUMOURNAME, g1000alleles_prefix, chrom_names) {
     if (!file.exists(al_file) || file.size(al_file) == 0) {
       log_failure("1000G alleles file '{al_file}' is missing or empty.")
     }
-    al <- data.table::fread(al_file, header = TRUE, stringsAsFactors = FALSE)
+    al <- data.table::fread(al_file, header = TRUE, sep = "auto", stringsAsFactors = FALSE)
     if (nrow(al) == 0) {
       log_failure("1000G alleles file '{al_file}' contains no data.")
     }
     AL[[chr]] <- al
     log_info("length(AL): '{length(AL)}'")
 
-    ref <- al$a0
-    alt <- al$a1
+    # Explicitly cast alleles to integer to support indexing even if read as character
+    ref <- as.integer(al$a0)
+    alt <- as.integer(al$a1)
 
     # Matrix indexing for lightning-fast extraction
     m_ac <- as.matrix(ac)
@@ -79,7 +82,8 @@ cell_line_baf_logR <- function(TUMOURNAME, g1000alleles_prefix, chrom_names) {
   }
 
   # CREATE mutantBAF and mutantLogR *.tab files #
-  cellline <- TUMOURNAME
+  # Use basename to ensure outputs land in the current directory, not the input counts directory
+  cellline <- basename(TUMOURNAME)
 
   # Assemble MAC efficiently (O(N))
   MAC_list <- lapply(chrom_names, function(chr) {

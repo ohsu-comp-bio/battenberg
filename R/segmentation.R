@@ -25,7 +25,7 @@ adjustSegmValues <- function(baf_chrom) {
 #' @param samplename Name of the sample, which is used to name output figures
 #' @param inputfile String that points to the output from the \code{concatenate_baf_files} function. This contains the phased SNPs with their BAF values
 #' @param outputfile String where the segmentation output will be written
-#' @param prior_breakpoints_file String that points to a file with prior breakpoints (from SVs for example) with chromosome and position columns (Default: NULL)
+#' @param prior_breakpoints_file String that points to a file with prior breakpoints (from SVs for example) with chromosome and position columns (header case-insensitive) (Default: NULL)
 #' @param gamma The gamma parameter controls the size of the penalty of starting a new segment during segmentation. It is therefore the key parameter for controlling the number of segments (Default 10)
 #' @param kmin Kmin represents the minimum number of probes/SNPs that a segment should consist of (Default 3)
 #' @param phasegamma Gamma parameter used when correcting phasing mistakes (Default 3)
@@ -68,6 +68,12 @@ segment_baf_phased <- function(samplename, inputfile, outputfile, prior_breakpoi
   BAFraw <- read_baf_as_data_frame(inputfile)
   if (!is.null(prior_breakpoints_file)) {
     bkps <- utils::read.table(prior_breakpoints_file, header = TRUE, stringsAsFactors = FALSE)
+    colnames(bkps) <- tolower(colnames(bkps))
+    colnames(bkps)[colnames(bkps) %in% c("chr")] <- "chromosome"
+    colnames(bkps)[colnames(bkps) %in% c("pos")] <- "position"
+    if (!all(c("chromosome", "position") %in% colnames(bkps))) {
+      log_failure("Prior breakpoints file must contain 'chromosome' and 'position' columns. Found: {paste(colnames(bkps), collapse=', ')}")
+    }
   } else {
     bkps <- NULL
   }
@@ -377,7 +383,7 @@ run_pcf <- function(
 #' @param samplename Name of the sample, which is used to name output figures
 #' @param inputfile String that points to the output from the \code{concatenate_baf_files} function. This contains the phased SNPs with their BAF values
 #' @param outputfile String where the segmentation output will be written
-#' @param prior_breakpoints_file String that points to a file with prior breakpoints (from SVs for example) with chromosome and position columns (Default: NULL)
+#' @param prior_breakpoints_file String that points to a file with prior breakpoints (from SVs for example) with chromosome and position columns (header case-insensitive) (Default: NULL)
 #' @param gamma The gamma parameter controls the size of the penalty of starting a new segment during segmentation. It is therefore the key parameter for controlling the number of segments (Default 10)
 #' @param calc_seg_baf_option Various options to recalculate the BAF of a segment. Options are: 1 - median, 2 - mean, 3 - ifelse median==0 or 1, median, mean. (Default: 3)
 #' @param GENOMEBUILD Genome build upon which the 1000G SNP coordinates were obtained
@@ -482,7 +488,15 @@ segment_baf_phased_multisample <- function(
   )
 
   bkps <- if (!is.null(prior_breakpoints_file)) {
-    data.table::fread(prior_breakpoints_file, header = TRUE)
+    dt <- data.table::fread(prior_breakpoints_file, header = TRUE)
+    data.table::setnames(dt, tolower(colnames(dt)))
+    if ("chr" %in% colnames(dt)) data.table::setnames(dt, "chr", "chromosome")
+    if ("pos" %in% colnames(dt)) data.table::setnames(dt, "pos", "position")
+
+    if (!all(c("chromosome", "position") %in% colnames(dt))) {
+      log_failure("Prior breakpoints file must contain 'chromosome' and 'position' columns. Found: {paste(colnames(dt), collapse=', ')}")
+    }
+    dt
   } else {
     NULL
   }

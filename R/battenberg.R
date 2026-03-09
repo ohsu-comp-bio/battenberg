@@ -85,11 +85,8 @@
 #' in the region (Default: 0.25)
 #' @param snp6_reference_info_file Reference info file for SNP6 data (Default: NA)
 #' @param enhanced_grid_search Flag to determine if the grid search should be performed with a higher number of steps (Default: FALSE)
-#' @param usebeagle Logical, if TRUE, expects Beagle output (VCF) in impute_results_dir and converts to IMPUTE format (Default: FALSE)
-#' @param verbose_logging Print out more information during the run
-#' (Default: FALSE)
-#' @param preprocessed_data_dir Directory containing existing preprocessed files (allele counts, etc). If provided, preprocessing is skipped and files are copied from this directory. (Default: NA)
-#' @param phasing_results_dir Directory containing existing phasing/imputation output files. If provided, the phasing/imputation step is skipped. (Default: NA)
+#' @param beagle_input_dir Directory containing Beagle VCF output files. If provided, 'usebeagle' logic is enabled. (Default: NA)
+#' @param chrom_names Optional vector of chromosome names. If not provided, derived from 'imputeinfofile' or defaults to 1:22. (Default: NULL)
 #' @param n_neighbors_search Number of top grid points to search (integer). Set to Inf for exhaustive search. If NULL, only local minima are searched.
 #' @param logging_path Path to write log files to (Default: ".")
 #'
@@ -99,13 +96,15 @@ battenberg <- function(
   analysis = "paired",
   samplename,
   normalname,
-  sample_data_file,
   normal_data_file,
-  imputeinfofile,
+  sample_data_file,
   g1000prefix,
   problemloci,
   allele_counts_dir,
-  impute_results_dir,
+  impute_results_dir = NA,
+  beagle_input_dir = NA,
+  imputeinfofile = NA,
+  chrom_names = NULL,
   gccorrectprefix = NULL,
   repliccorrectprefix = NULL,
   g1000allelesprefix = NA,
@@ -148,9 +147,6 @@ battenberg <- function(
   chrom_coord_file = NULL,
   enhanced_grid_search = FALSE,
   verbose_logging = FALSE,
-  usebeagle = FALSE,
-  preprocessed_data_dir = NA,
-  phasing_results_dir = NA,
   n_neighbors_search = NULL,
   grid_psi_step = 0.05,
   grid_rho_step = 0.01,
@@ -161,16 +157,22 @@ battenberg <- function(
 
   # Set global thread limits based on user configuration
   if (requireNamespace("data.table", quietly = TRUE)) {
-    if (requireNamespace("data.table", quietly = TRUE)) {
-      data.table::setDTthreads(threads_per_chromosome)
-    }
+    data.table::setDTthreads(threads_per_chromosome)
     Sys.setenv(OMP_NUM_THREADS = threads_per_chromosome)
     Sys.setenv(MKL_NUM_THREADS = threads_per_chromosome)
     Sys.setenv(OPENBLAS_NUM_THREADS = threads_per_chromosome)
 
+    # vroom uses its own threading model; we cap it here to match
+    if (requireNamespace("vroom", quietly = TRUE)) {
+      Sys.setenv(VROOM_THREADS = threads_per_chromosome)
+    }
+
     # Inform the user about the thread configuration
     log_info(strrep("-", 60))
     log_info("Battenberg Thread Configuration:")
+    if (threads_per_chromosome == 1 && chromosomes_in_parallel == 1) {
+      log_info("  - MODE: STRICT SEQUENTIAL (1 CPU)")
+    }
     log_info("  - Chromosomes/Samples in parallel: {chromosomes_in_parallel}")
     log_info("  - Threads per chromosome (Inner): {threads_per_chromosome}")
     log_info("  - Total max theoretical threads: {chromosomes_in_parallel * threads_per_chromosome}")
@@ -228,17 +230,17 @@ battenberg <- function(
       log_failure("Please provide a path to a problematic loci file")
     }
 
-    if (!file.exists(imputeinfofile)) {
-      log_failure("Please provide a path to an impute info file")
+    # check whether the impute_info.txt file contains correct paths
+    if (!is.na(imputeinfofile)) {
+      if (!file.exists(imputeinfofile)) {
+        log_failure("imputeinfofile provided but does not exist: {imputeinfofile}")
+      }
+      check_imputeinfofile(
+        imputeinfofile = imputeinfofile,
+        is_male = ismale,
+        usebeagle = !is.na(beagle_input_dir)
+      )
     }
-
-    # check whether the impute_info.txt file contains correct paths
-    # check whether the impute_info.txt file contains correct paths
-    check_imputeinfofile(
-      imputeinfofile = imputeinfofile,
-      is_male = ismale,
-      usebeagle = usebeagle
-    )
 
     # check whether multisample case
     nsamples <- length(samplename)
@@ -248,116 +250,113 @@ battenberg <- function(
         log_info("Running Battenberg in multisample mode on {nsamples} samples: \\
                 {paste(samplename, collapse = ', ')}")
       }
-      chrom_names <- get_chrom_names(imputeinfofile, ismale, analysis = analysis)
+      chrom_names <- get_chrom_names(imputeinfofile, ismale, analysis = analysis, chrom_names = chrom_names)
     } else if (data_type == "snp6" || data_type == "SNP6") {
       if (nsamples > 1) {
         log_failure("Battenberg multisample mode has \\
        not been tested with SNP6 data")
       }
-      chrom_names <- get_chrom_names(imputeinfofile, TRUE)
+      chrom_names <- get_chrom_names(imputeinfofile, TRUE, chrom_names = chrom_names)
     }
     # Global parameter validation
-    if (!missing(allele_counts_dir) && !is.na(allele_counts_dir) && !dir.exists(allele_counts_dir)) {
-      log_failure("allele_counts_dir does not exist: {allele_counts_dir}")
+    if (is.na(allele_counts_dir) || !dir.exists(allele_counts_dir)) {
+      log_failure("allele_counts_dir is missing or invalid: {allele_counts_dir}")
     }
-    if (!missing(impute_results_dir) && !is.na(impute_results_dir) && !dir.exists(impute_results_dir)) {
-      log_failure("impute_results_dir does not exist: {impute_results_dir}")
+    if (is.na(impute_results_dir) && is.na(beagle_input_dir)) {
+      log_failure("Either impute_results_dir or beagle_input_dir must be provided.")
     }
 
     for (sampleidx in 1:nsamples) {
       if (data_type == "wgs" || data_type == "WGS") {
         # Setup for parallel computing using chromosomes_in_parallel
-        if (chromosomes_in_parallel > 1 && is.na(preprocessed_data_dir)) {
+        if (chromosomes_in_parallel > 1) {
           # In preprocessing, we run samples sequentially in a for loop.
           # So each sample uses chromosomes_in_parallel for the parallel map.
           clp <- parallel::makeCluster(chromosomes_in_parallel, outfile = "")
           doParallel::registerDoParallel(clp)
+
+          # Export functions to workers for cluster stability
+          vars_to_export <- c("prepare_wgs", "prepare_wgs_cell_line", "prepare_wgs_germline", "libs")
+          parallel::clusterExport(clp, varlist = vars_to_export, envir = environment())
         }
 
-        if (is.na(preprocessed_data_dir)) {
-          if (analysis == "paired") {
-            if (is.null(normalname) || is.na(normalname)) {
-              log_failure("No normal sample is specified for \\
-                'paired analysis' - a normal paired BAM is required")
-            }
-            prepare_wgs(
-              chrom_names = chrom_names,
-              tumourbam = sample_data_file[sampleidx],
-              normalbam = normal_data_file,
-              tumourname = samplename[sampleidx],
-              normalname = normalname,
-              g1000allelesprefix = g1000allelesprefix,
-              g1000prefix = g1000prefix,
-              gccorrectprefix = gccorrectprefix,
-              repliccorrectprefix = repliccorrectprefix,
-              min_base_qual = min_base_qual,
-              min_map_qual = min_map_qual,
-              allele_counts_dir = allele_counts_dir,
-              min_normal_depth = min_normal_depth,
-              nthreads = threads_per_chromosome, # Pass down the inner threads budget (threads per chromosome)
-              libs = libs
-            )
-          } else if (analysis == "cell_line") {
-            prepare_wgs_cell_line(
-              chrom_names = chrom_names,
-              chrom_coord = chrom_coord_file,
-              tumourbam = sample_data_file[sampleidx],
-              tumourname = samplename[sampleidx],
-              g1000lociprefix = g1000prefix,
-              g1000allelesprefix = g1000allelesprefix,
-              gamma_ivd = 1e5,
-              kmin_ivd = 50,
-              centromere_noise_seg_size = 1e6,
-              centromere_dist = 5e5,
-              min_het_dist = 1e5,
-              gamma_logr = 100,
-              length_adjacent = 5e4,
-              gccorrectprefix = gccorrectprefix,
-              repliccorrectprefix = repliccorrectprefix,
-              min_base_qual = min_base_qual,
-              min_map_qual = min_map_qual,
-              allele_counts_dir = allele_counts_dir,
-              min_normal_depth = min_normal_depth,
-              libs = libs
-            )
-          } else if (analysis == "germline") {
-            prepare_wgs_germline(
-              chrom_names = chrom_names,
-              chrom_coord = chrom_coord_file,
-              germlinebam = sample_data_file[sampleidx],
-              germlinename = samplename[sampleidx],
-              g1000lociprefix = g1000prefix,
-              g1000allelesprefix = g1000allelesprefix,
-              gamma_ivd = 1e5,
-              kmin_ivd = 50,
-              centromere_noise_seg_size = 1e6,
-              centromere_dist = 5e5,
-              min_het_dist = 2e3,
-              gamma_logr = 100,
-              length_adjacent = 5e4,
-              gccorrectprefix = gccorrectprefix,
-              repliccorrectprefix = repliccorrectprefix,
-              min_base_qual = min_base_qual,
-              min_map_qual = min_map_qual,
-              allele_counts_dir = allele_counts_dir,
-              min_normal_depth = min_normal_depth,
-              libs = libs
-            )
+
+        if (analysis == "paired") {
+          if (is.null(normalname) || is.na(normalname)) {
+            log_failure("No normal sample is specified for \\
+              'paired analysis' - a normal paired BAM is required")
           }
-          preprocessing_source_dir <- "."
-        } else {
-          log_info("Skipping preprocessing (allele counting and GC correction) -> preprocessed_data_dir provided")
-          if (!dir.exists(preprocessed_data_dir)) {
-            log_failure("preprocessed_data_dir is provided but does not exist: {preprocessed_data_dir}")
-          }
-          log_info("Using existing preprocessed files from {preprocessed_data_dir}")
-          preprocessing_source_dir <- preprocessed_data_dir
+          prepare_wgs(
+            chrom_names = chrom_names,
+            tumourbam = sample_data_file[sampleidx],
+            normalbam = normal_data_file,
+            tumourname = samplename[sampleidx],
+            normalname = normalname,
+            g1000allelesprefix = g1000allelesprefix,
+            g1000prefix = g1000prefix,
+            gccorrectprefix = gccorrectprefix,
+            repliccorrectprefix = repliccorrectprefix,
+            min_base_qual = min_base_qual,
+            min_map_qual = min_map_qual,
+            allele_counts_dir = allele_counts_dir,
+            min_normal_depth = min_normal_depth,
+            nthreads = threads_per_chromosome, # Pass down the inner threads budget (threads per chromosome)
+            libs = libs
+          )
+        } else if (analysis == "cell_line") {
+          prepare_wgs_cell_line(
+            chrom_names = chrom_names,
+            chrom_coord = chrom_coord_file,
+            tumourbam = sample_data_file[sampleidx],
+            tumourname = samplename[sampleidx],
+            g1000lociprefix = g1000prefix,
+            g1000allelesprefix = g1000allelesprefix,
+            gamma_ivd = 1e5,
+            kmin_ivd = 50,
+            centromere_noise_seg_size = 1e6,
+            centromere_dist = 5e5,
+            min_het_dist = 1e5,
+            gamma_logr = 100,
+            length_adjacent = 5e4,
+            gccorrectprefix = gccorrectprefix,
+            repliccorrectprefix = repliccorrectprefix,
+            min_base_qual = min_base_qual,
+            min_map_qual = min_map_qual,
+            allele_counts_dir = allele_counts_dir,
+            min_normal_depth = min_normal_depth,
+            libs = libs
+          )
+        } else if (analysis == "germline") {
+          prepare_wgs_germline(
+            chrom_names = chrom_names,
+            chrom_coord = chrom_coord_file,
+            germlinebam = sample_data_file[sampleidx],
+            germlinename = samplename[sampleidx],
+            g1000lociprefix = g1000prefix,
+            g1000allelesprefix = g1000allelesprefix,
+            gamma_ivd = 1e5,
+            kmin_ivd = 50,
+            centromere_noise_seg_size = 1e6,
+            centromere_dist = 5e5,
+            min_het_dist = 2e3,
+            gamma_logr = 100,
+            length_adjacent = 5e4,
+            gccorrectprefix = gccorrectprefix,
+            repliccorrectprefix = repliccorrectprefix,
+            min_base_qual = min_base_qual,
+            min_map_qual = min_map_qual,
+            allele_counts_dir = allele_counts_dir,
+            min_normal_depth = min_normal_depth,
+            libs = libs
+          )
         }
 
         # Kill the threads
-        if (chromosomes_in_parallel > 1 && is.na(preprocessed_data_dir)) {
+        if (chromosomes_in_parallel > 1) {
           parallel::stopCluster(clp)
         }
+        # Final GC after preprocessing batch for this sample
+        gc()
       } else if (data_type == "snp6" || data_type == "SNP6") {
         prepare_snp6(
           tumour_cel_file = sample_data_file[sampleidx],
@@ -371,7 +370,6 @@ battenberg <- function(
           birdseed_report_file = birdseed_report_file,
           genomebuild = genomebuild
         )
-        preprocessing_source_dir <- "."
       } else {
         log_failure("Unknown data type provided, please provide wgs or snp6")
         q(save = "no", status = 1)
@@ -387,109 +385,104 @@ battenberg <- function(
       }
 
 
-      if (is.na(phasing_results_dir)) {
-        # if external phasing data is provided (as a vcf), split into chromosomes for use in haplotype reconstruction
-        if (!is.na(externalhaplotypefile) && file.exists(externalhaplotypefile)) {
-          externalhaplotypeprefix <- paste0(normalname, "_external_haplotypes_chr")
+      # if external phasing data is provided (as a vcf), split into chromosomes for use in haplotype reconstruction
+      if (!is.na(externalhaplotypefile) && file.exists(externalhaplotypefile)) {
+        externalhaplotypeprefix <- paste0(normalname, "_external_haplotypes_chr")
 
-          # if these files exist already, no need to split again
-          if (any(!file.exists(paste0(externalhaplotypeprefix, seq_along(chrom_names), ".vcf")))) {
-            log_info("Splitting external phasing data from '{externalhaplotypefile}'")
-            split_input_haplotypes(
-              chrom_names = chrom_names,
-              externalhaplotypefile = externalhaplotypefile,
-              outprefix = externalhaplotypeprefix
-            )
-          } else {
-            log_info("No need to split, external haplotype files per chromosome found")
-          }
+        # if these files exist already, no need to split again
+        if (any(!file.exists(paste0(externalhaplotypeprefix, seq_along(chrom_names), ".vcf")))) {
+          log_info("Splitting external phasing data from '{externalhaplotypefile}'")
+          split_input_haplotypes(
+            chrom_names = chrom_names,
+            externalhaplotypefile = externalhaplotypefile,
+            outprefix = externalhaplotypeprefix
+          )
         } else {
-          externalhaplotypeprefix <- NA
+          log_info("No need to split, external haplotype files per chromosome found")
         }
-
-        # Setup for parallel computing
-        # Setup for parallel computing
-        # Setup for parallel computing
-        if (chromosomes_in_parallel > 1) {
-          clp <- parallel::makeCluster(chromosomes_in_parallel, outfile = "")
-          doParallel::registerDoParallel(clp)
-        }
-
-        # Reconstruct haplotypes
-        # mclapply(seq_along(chrom_names), function(chrom) {
-        do_haplotyping <- function(i) {
-          .libPaths(libs)
-          chrom <- chrom_names[i]
-          if (analysis == "germline") {
-            log_info("germline chrom {chrom}")
-            run_haplotyping_germline(
-              chrom = chrom,
-              germlinename = samplename[sampleidx],
-              normalname = normalname,
-              ismale = ismale,
-              imputeinfofile = imputeinfofile,
-              problemloci = problemloci,
-              impute_results_dir = impute_results_dir,
-              min_normal_depth = min_normal_depth,
-              chrom_names = chrom_names,
-              snp6_reference_info_file = NA,
-              heterozygous_filter = NA,
-              usebeagle = usebeagle
-            )
-          } else {
-            .libPaths(libs)
-            chrom <- chrom_names[i]
-            log_info("chrom {chrom}")
-            run_haplotyping(
-              chrom = chrom,
-              tumourname = samplename[sampleidx],
-              normalname = normalname,
-              ismale = ismale,
-              imputeinfofile = imputeinfofile,
-              problemloci = problemloci,
-              impute_results_dir = impute_results_dir,
-              min_normal_depth = min_normal_depth,
-              chrom_names = chrom_names,
-              snp6_reference_info_file = snp6_reference_info_file,
-              heterozygous_filter = heterozygous_filter,
-              externalhaplotypeprefix = externalhaplotypeprefix,
-              usebeagle = usebeagle,
-              allele_frequencies_dir = preprocessing_source_dir
-            )
-          }
-        }
-        run_with_error_handling(
-          iterator = seq_along(chrom_names),
-          func = do_haplotyping,
-          libs = libs,
-          nthreads = threads_per_chromosome
-        )
-
-        # Kill the threads as from here its all single core
-        # Kill the threads as from here its all single core
-        if (chromosomes_in_parallel > 1) {
-          parallel::stopCluster(clp)
-        }
-
-        # Combine all the BAF output into a single file
-        concatenate_baf_files(
-          input_start = paste(samplename[sampleidx], "_chr", sep = ""),
-          input_end = "_heterozygousMutBAFs_haplotyped.txt",
-          output_file = paste(samplename[sampleidx], "_heterozygousMutBAFs_haplotyped.txt", sep = ""),
-          chr_names = chrom_names
-        )
       } else {
-        log_info("Skipping phasing and imputation steps -> phasing_results_dir provided")
-        if (!dir.exists(phasing_results_dir)) {
-          log_failure("phasing_results_dir is provided but does not exist: {phasing_results_dir}")
-        }
-        log_info("Using existing phasing files from {phasing_results_dir}")
+        externalhaplotypeprefix <- NA
       }
 
-      # Determine where to look for phasing results
-      phasing_source_dir <- if (!is.na(phasing_results_dir)) phasing_results_dir else "."
+      # Setup for parallel computing
+      if (chromosomes_in_parallel > 1) {
+        clp <- parallel::makeCluster(chromosomes_in_parallel, outfile = "")
+        doParallel::registerDoParallel(clp)
 
-      # Segment the phased and haplotyped BAF data
+        # Export functions to workers for cluster stability
+        vars_to_export <- c("run_haplotyping", "run_haplotyping_germline", "libs")
+        parallel::clusterExport(clp, varlist = vars_to_export, envir = environment())
+      }
+
+      # Reconstruct haplotypes
+      do_haplotyping <- function(i) {
+        .libPaths(libs)
+        chrom <- chrom_names[i]
+        if (analysis == "germline") {
+          log_info("germline chrom {chrom}")
+          run_haplotyping_germline(
+            chrom = chrom,
+            germlinename = samplename[sampleidx],
+            normalname = normalname,
+            ismale = ismale,
+            problemloci = problemloci,
+            impute_results_dir = impute_results_dir,
+            min_normal_depth = min_normal_depth,
+            chrom_names = chrom_names,
+            imputeinfofile = imputeinfofile,
+            snp6_reference_info_file = NA,
+            heterozygous_filter = NA,
+            beagle_input_dir = beagle_input_dir,
+            allele_frequencies_dir = allele_counts_dir,
+            chrom_coord_file = chrom_coord_file
+          )
+        } else {
+          .libPaths(libs)
+          chrom <- chrom_names[i]
+          log_info("chrom {chrom}")
+          run_haplotyping(
+            chrom = chrom,
+            tumourname = samplename[sampleidx],
+            normalname = normalname,
+            ismale = ismale,
+            problemloci = problemloci,
+            impute_results_dir = impute_results_dir,
+            min_normal_depth = min_normal_depth,
+            chrom_names = chrom_names,
+            imputeinfofile = imputeinfofile,
+            snp6_reference_info_file = snp6_reference_info_file,
+            heterozygous_filter = heterozygous_filter,
+            beagle_input_dir = beagle_input_dir,
+            allele_frequencies_dir = allele_counts_dir,
+            chrom_coord_file = chrom_coord_file
+          )
+        }
+      }
+      run_with_error_handling(
+        iterator = seq_along(chrom_names),
+        func = do_haplotyping,
+        libs = libs,
+        nthreads = threads_per_chromosome
+      )
+
+      # Kill the threads as from here its all single core
+      if (chromosomes_in_parallel > 1) {
+        parallel::stopCluster(clp)
+      }
+
+      # Trigger GC after phasing completes
+      gc()
+
+      # Combine all the BAF output into a single file
+      concatenate_baf_files(
+        input_start = paste(samplename[sampleidx], "_chr", sep = ""),
+        input_end = "_heterozygousMutBAFs_haplotyped.txt",
+        output_file = paste(samplename[sampleidx], "_heterozygousMutBAFs_haplotyped.txt", sep = ""),
+        chr_names = chrom_names
+      )
+
+      # Determine where to look for phasing results
+      phasing_source_dir <- "."
       segment_baf_phased(
         samplename = samplename[sampleidx],
         inputfile = file.path(phasing_source_dir, paste(samplename[sampleidx], "_heterozygousMutBAFs_haplotyped.txt", sep = "")),
@@ -506,9 +499,9 @@ battenberg <- function(
         # Write the Battenberg phasing information to disk as a vcf
         write_battenberg_phasing(
           tumourname = samplename[sampleidx],
-          SNPfiles = paste0(
-            samplename[sampleidx], "_alleleFrequencies_chr",
-            chrom_names, ".txt"
+          SNPfiles = file.path(
+            allele_counts_dir,
+            paste0(samplename[sampleidx], "_alleleFrequencies_chr", chrom_names, ".txt")
           ),
           imputedHaplotypeFiles = file.path(phasing_source_dir, paste0(
             samplename[sampleidx],
@@ -616,7 +609,7 @@ battenberg <- function(
           # Get BAFs for the specific chromosome
           GetChromosomeBAFs(
             chrom = chrom,
-            SNP_file = file.path(preprocessing_source_dir, paste(samplename[sampleidx], "_alleleFrequencies_chr",
+            SNP_file = file.path(allele_counts_dir, paste(samplename[sampleidx], "_alleleFrequencies_chr",
               chrom, ".txt",
               sep = ""
             )),
@@ -692,6 +685,13 @@ battenberg <- function(
       num_sample_workers <- min(nsamples, chromosomes_in_parallel)
       clp <- parallel::makeCluster(num_sample_workers, outfile = "")
       doParallel::registerDoParallel(clp)
+
+      # Export everything needed to the cluster
+      vars_to_export <- c(
+        "fit_copy_number", "call_subclones", "callChrXsubclones",
+        "make_posthoc_plots", "cnfit_to_refit_suggestions", "libs"
+      )
+      parallel::clusterExport(clp, varlist = vars_to_export, envir = environment())
     }
 
     # Use the universal helper to process each sample
@@ -701,9 +701,14 @@ battenberg <- function(
 
       # Determine file paths based on data type and analysis mode
       if (data_type == "wgs" || data_type == "WGS") {
-        logr_file <- file.path(preprocessing_source_dir, paste(samplename[sampleidx], "_mutantLogR_gcCorrected.tab", sep = ""))
+        # Combined files (BAF/LogR) are usually in the current directory (results) after preprocessing,
+        # but could optionally be in the allele_counts_dir. We check both to be robust.
+        logr_name <- paste(samplename[sampleidx], "_mutantLogR_gcCorrected.tab", sep = "")
+        logr_file <- if (file.exists(logr_name)) logr_name else file.path(allele_counts_dir, logr_name)
+
         if (analysis == "paired") {
-          allelecounts_file <- file.path(preprocessing_source_dir, paste(samplename[sampleidx], "_alleleCounts.tab", sep = ""))
+          ac_name <- paste(samplename[sampleidx], "_alleleCounts.tab", sep = "")
+          allelecounts_file <- if (file.exists(ac_name)) ac_name else file.path(allele_counts_dir, ac_name)
         } else {
           allelecounts_file <- NULL
         }
@@ -722,7 +727,10 @@ battenberg <- function(
         samplename = samplename[sampleidx],
         outputfile_prefix = paste(samplename[sampleidx], "_", sep = ""),
         inputfile_baf_segmented = paste(samplename[sampleidx], ".BAFsegmented.txt", sep = ""),
-        inputfile_baf = file.path(preprocessing_source_dir, paste(samplename[sampleidx], "_mutantBAF.tab", sep = "")),
+        inputfile_baf = (function(f, d) if (file.exists(f)) f else file.path(d, f))(
+          paste(samplename[sampleidx], "_mutantBAF.tab", sep = ""),
+          allele_counts_dir
+        ),
         inputfile_logr = logr_file,
         dist_choice = clonality_dist_metric,
         ascat_dist_choice = ascat_dist_metric,
@@ -819,11 +827,8 @@ battenberg <- function(
       )
     }, libs, nthreads = threads_per_chromosome)
 
-    # Kill the threads as last part again is single core
-    # Kill the threads as last part again is single core
-    if (chromosomes_in_parallel > 1) {
-      parallel::stopCluster(clp)
-    }
+    # Trigger garbage collection after heavy fitting loop
+    gc()
 
     if (nsamples > 1) {
       log_info("Assessing mirrored subclonal allelic imbalance (MSAI)")

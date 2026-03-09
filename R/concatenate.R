@@ -27,22 +27,41 @@ concatenateImputeFiles <- function(inputStart, boundaries) {
 #' Function to concatenate allele counter output
 #' @noRd
 concatenateAlleleCountFiles <- function(inputStart, inputEnd, chr_names) {
-  # Vectorized filename generation
-  all_files <- paste0(inputStart, chr_names, inputEnd)
+  # Robust filename resolution: try both '1' and 'chr1'
+  find_file <- function(prefix, chrom, suffix) {
+    f1 <- paste0(prefix, chrom, suffix)
+    if (file.exists(f1)) {
+      return(f1)
+    }
+    # Try with/without 'chr'
+    if (grepl("^chr", chrom, ignore.case = TRUE)) {
+      f2 <- paste0(prefix, gsub("^chr", "", chrom, ignore.case = TRUE), suffix)
+    } else {
+      f2 <- paste0(prefix, "chr", chrom, suffix)
+    }
+    if (file.exists(f2)) {
+      return(f2)
+    }
+    return(NULL)
+  }
 
-  # Vectorized file checking (much faster than a for-loop)
-  # This filters the list to only existing, non-empty files
-  infiles <- all_files[file.exists(all_files) & file.info(all_files)$size > 0]
+  infiles <- character(0)
+  for (cn in chr_names) {
+    f <- find_file(inputStart, cn, inputEnd)
+    if (!is.null(f) && file.info(f)$size > 0) {
+      infiles <- c(infiles, f)
+    }
+  }
+
   if (length(infiles) == 0) {
     return(data.frame())
   }
   log_info("Using {length(infiles)} infiles in concatenateAlleleCountFiles. Example: {infiles[1]}")
 
-  # Bulk read using vroom for significant speedup
-  # Allele counter files typically have no header or start with '#' comments
+  # Bulk read using vroom. We remove delim="\t" to allow guessing,
+  # which handles both space and tab delimited counts.
   combined <- vroom::vroom(
     infiles,
-    delim = "\t",
     col_names = c("CHR", "POS", "Count_A", "Count_C", "Count_G", "Count_T", "Good_depth"),
     col_types = "ciiiiii",
     comment = "#",
@@ -55,26 +74,55 @@ concatenateAlleleCountFiles <- function(inputStart, inputEnd, chr_names) {
 #' Function to concatenate 1000 Genomes SNP reference files
 #' @noRd
 concatenateG1000SnpFiles <- function(inputStart, inputEnd, chr_names) {
-  # Vectorized filename generation
-  filenames <- paste0(inputStart, chr_names, inputEnd)
-  names(filenames) <- chr_names
+  # Robust filename resolution
+  find_file <- function(prefix, chrom, suffix) {
+    f1 <- paste0(prefix, chrom, suffix)
+    if (file.exists(f1)) {
+      return(f1)
+    }
+    if (grepl("^chr", chrom, ignore.case = TRUE)) {
+      f2 <- paste0(prefix, gsub("^chr", "", chrom, ignore.case = TRUE), suffix)
+    } else {
+      f2 <- paste0(prefix, "chr", chrom, suffix)
+    }
+    if (file.exists(f2)) {
+      return(f2)
+    }
+    return(NULL)
+  }
 
-  # Filter for valid files
-  existing_files <- filenames[file.exists(filenames) & file.info(filenames)$size > 0]
+  existing_files <- character(0)
+  for (cn in chr_names) {
+    f <- find_file(inputStart, cn, inputEnd)
+    if (!is.null(f) && file.info(f)$size > 0) {
+      existing_files[cn] <- f
+    }
+  }
 
   if (length(existing_files) == 0) {
     return(data.frame())
   }
 
-  # Bulk read using vroom for speed
-  # Reference files have a header
-  combined <- vroom::vroom(
-    existing_files,
-    delim = "\t",
-    col_types = vroom::cols(.default = "c"),
-    show_col_types = FALSE
-  )
+  # Read files individually to inject chromosome if missing (common in some bundles)
+  # using data.table::fread for multi-delimiter robustness
+  datalist <- lapply(names(existing_files), function(cn) {
+    f <- existing_files[cn]
 
-  data.table::setDF(combined)
+    # Force colClasses to character for initial read to prevent parsing issues
+    d <- data.table::fread(f, sep = "auto", header = "auto", colClasses = "character", data.table = FALSE)
+
+    if (ncol(d) == 3) {
+      # File has (POS, A0, A1), we prepend the CHR from filename
+      d <- cbind(CHR = cn, d)
+    }
+
+    # Ensure consistent column naming to prevent binding issues
+    colnames(d)[1:4] <- c("CHR", "POS", "A0", "A1")
+
+    # Standardise structure to exactly 4 columns: CHR, POS, A0, A1
+    return(d[, 1:4])
+  })
+
+  combined <- data.table::as.data.table(data.table::rbindlist(datalist, use.names = TRUE))
   return(combined)
 }

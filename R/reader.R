@@ -70,12 +70,25 @@ read_gccontent <- function(filename) {
   dt <- data.table::fread(
     file = filename,
     header = TRUE,
-    sep = "\t",
+    sep = "auto",
     skip = "chr",
     check.names = FALSE,
     fill = TRUE,
-    select = 1:20
+    data.table = FALSE
   )
+
+  # Standardize headers (support both 'chr'/'pos' and 'Chromosome'/'Position')
+  if ("chr" %in% colnames(dt)) names(dt)[names(dt) == "chr"] <- "Chromosome"
+  if ("pos" %in% colnames(dt)) names(dt)[names(dt) == "pos"] <- "Position"
+
+  # Ensure all window columns are numeric
+  win_cols <- setdiff(colnames(dt), c("Chromosome", "Position"))
+  for (col in win_cols) {
+    if (!is.numeric(dt[[col]])) {
+      dt[[col]] <- as.numeric(dt[[col]])
+    }
+  }
+
   log_info("Verified headers gccontent for {basename(filename)}: {paste(colnames(dt), collapse = ', ')}")
   return(dt)
 }
@@ -88,9 +101,23 @@ read_replication <- function(filename) {
   dt <- data.table::fread(
     file = filename,
     header = TRUE,
-    sep = "\t",
-    skip = "chr"
+    sep = "auto",
+    skip = "chr",
+    data.table = FALSE
   )
+
+  # Standardize headers
+  if ("chr" %in% colnames(dt)) names(dt)[names(dt) == "chr"] <- "Chromosome"
+  if ("pos" %in% colnames(dt)) names(dt)[names(dt) == "pos"] <- "Position"
+
+  # Ensure replication columns are numeric
+  win_cols <- setdiff(colnames(dt), c("Chromosome", "Position"))
+  for (col in win_cols) {
+    if (!is.numeric(dt[[col]])) {
+      dt[[col]] <- as.numeric(dt[[col]])
+    }
+  }
+
   log_info("Verified headers replication {paste(colnames(dt), collapse = ', ')}")
   return(dt)
 }
@@ -153,6 +180,7 @@ read_alleleFrequencies <- function(filename) {
 #' Parser for impute input data
 #' @param filename Filename of the file to read in
 #' @return A data frame with the input for impute
+#' @export
 read_impute_input <- function(filename) {
   # :: syntax used for log_info or other package calls
   log_info("Reading impute input data from: {normalizePath(filename, mustWork = FALSE)}")

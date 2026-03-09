@@ -48,8 +48,8 @@ battenberg_cli <- function() {
 
     # Reference Paths
     optparse::make_option(c("--imputeinfofile"),
-      type = "character",
-      help = "Path to impute info file"
+      type = "character", default = NA,
+      help = "Path to impute info file (optional if beagle_input_dir and chrom_names are provided)"
     ),
     optparse::make_option(c("--g1000prefix"),
       type = "character",
@@ -82,6 +82,10 @@ battenberg_cli <- function() {
     optparse::make_option(c("--chrom_coord_file"),
       type = "character",
       default = NULL
+    ),
+    optparse::make_option(c("--chrom_names"),
+      type = "character", default = NULL,
+      help = "Comma-separated list of chromosomes (e.g., 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,X)"
     ),
     optparse::make_option(c("--allele_counts_dir"),
       type = "character", default = NA,
@@ -169,12 +173,6 @@ battenberg_cli <- function() {
       type = "integer", default = 7,
       help = "Window size for local minimum detection (3, 5, 7, 9, etc.), larger = stricter. Default 7."
     ),
-    optparse::make_option(c("--preprocessed_data_dir"),
-      type = "character", default = NA
-    ),
-    optparse::make_option(c("--phasing_results_dir"),
-      type = "character", default = NA
-    ),
 
     # Quality Thresholds
     optparse::make_option(c("--min_normal_depth"),
@@ -197,8 +195,9 @@ battenberg_cli <- function() {
     ),
 
     # Beagle Specifics
-    optparse::make_option(c("--usebeagle"),
-      type = "logical", default = FALSE, action = "store_true"
+    optparse::make_option(c("--beagle_input_dir"),
+      type = "character", default = NA,
+      help = "Directory containing Beagle VCF output files"
     ),
     optparse::make_option(c("--prior_breakpoints_file"),
       type = "character", default = NULL
@@ -268,6 +267,11 @@ battenberg_cli <- function() {
     log_info(sprintf("%-40s : %s", name, paste(val, collapse = ", ")))
   }
   log_info(strrep("=", 120))
+
+  # Split chrom_names if provided as comma-separated string
+  if (!is.null(opt$chrom_names)) {
+    opt$chrom_names <- unlist(strsplit(opt$chrom_names, ","))
+  }
 
   # Execute main function
   do.call(battenberg, opt)

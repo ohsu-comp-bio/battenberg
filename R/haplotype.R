@@ -120,17 +120,32 @@ GetChromosomeBAFs <- function(
     )
   }
 
+  # Check for empty data after filtering/type conversion
   if (nrow(snp_dt) == 0) {
-    log_failure("SNP file is empty after filtering/type conversion: {SNP_file}")
+    log_warning("SNP file is empty after filtering/type conversion: {SNP_file}")
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
   }
   if (nrow(phase_dt) == 0) {
-    log_failure("Haplotype file is empty after filtering/type conversion: {haplotypeFile}")
+    log_info("Haplotype file is empty (likely 0 phased SNPs): {haplotypeFile}")
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
+  }
+
+  # Ensure column names exist before extraction
+  required_cols <- c("V3", "V6", "V7", "V4", "V5")
+  missing <- setdiff(required_cols, names(phase_dt))
+  if (length(missing) > 0) {
+    log_warning("Haplotype file {haplotypeFile} is missing required columns: {paste(missing, collapse=', ')}")
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
   }
 
   # Use [[ indexing to explicitly reference columns by name (strings)
   het_phase <- phase_dt[phase_dt[["V6"]] != phase_dt[["V7"]]]
 
   if (nrow(het_phase) == 0) {
+    log_info("No heterozygous phased SNPs found on chromosome {chrom}")
     write_empty_output(chrom, samplename, outfile)
     return(invisible(NULL))
   }
@@ -163,8 +178,8 @@ GetChromosomeBAFs <- function(
   nuc_to_col <- c(A = 3L, C = 4L, G = 5L, "T" = 6L)
 
   # Extract phased alleles as characters
-  ref_allele <- ifelse(het_phase[["V6"]] == 0, het_phase[["V4"]], het_phase[["V5"]])
-  alt_allele <- ifelse(het_phase[["V6"]] == 1, het_phase[["V4"]], het_phase[["V5"]])
+  ref_allele <- toupper(ifelse(het_phase[["V6"]] == 0, het_phase[["V4"]], het_phase[["V5"]]))
+  alt_allele <- toupper(ifelse(het_phase[["V6"]] == 1, het_phase[["V4"]], het_phase[["V5"]]))
 
   # Use matrix indexing to get counts safely without dynamic column warnings
   # We select only the count columns (3 through 6)

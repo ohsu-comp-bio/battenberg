@@ -346,7 +346,7 @@ fit_copy_number <- function(
 #' written. Masking is performed to remove very high copy number state segments
 #' @param max_allowed_state The maximum CN state allowed (Default 250)
 #' @param cn_upper_limit The maximum CN that can be called (Default 1000)
-#' @param prior_breakpoints_file A two column file with prior breakpoints, possibly
+#' @param prior_breakpoints_file A two column file with prior breakpoints (e.g. from SVs). Must contain a header with columns 'chromosome' and 'position' (header case-insensitive)
 #' from structural variants. This file must contain two columns: chromosome and
 #' position. These are used when making the figures
 #' @param gamma Technology specific scaling parameter for LogR (Default 1)
@@ -892,12 +892,13 @@ determine_copynumber <- function(BAFvals, LogRvals, rho, psi, gamma, ctrans,
 plot_gw_subclonal_cn <- function(subclones, BAFvals, rho, ploidy, goodness,
                                  output_gw_figures_prefix, chr_names,
                                  tumourname) {
-  # Map start and end of each segment into the BAF values. The plot uses the index
-  # of this BAF table as x-axis. Using O(M) vectorized approach.
-  pos_min <- rep(NA_integer_, nrow(subclones))
-  pos_max <- rep(NA_integer_, nrow(subclones))
+  # Robust chromosome normalization to ensure consistent indexing
+  gsubchr <- function(x) gsub("chr", "", as.character(x), ignore.case = TRUE)
+  BAFvals$Chromosome <- gsubchr(BAFvals$Chromosome)
+  subclones$chr <- gsubchr(subclones$chr)
+  chr_names <- gsubchr(chr_names)
 
-  for (chr in unique(as.character(subclones$chr))) {
+  for (chr in unique(subclones$chr)) {
     baf_idx <- which(BAFvals$Chromosome == chr)
     if (length(baf_idx) == 0) next
 
@@ -905,7 +906,6 @@ plot_gw_subclonal_cn <- function(subclones, BAFvals, rho, ploidy, goodness,
     curr_sub <- subclones[sub_idx, ]
 
     # Map each SNP to a segment index using findInterval
-    # Original logic: startpos < Position <= endpos
     snp_to_seg <- findInterval(BAFvals$Position[baf_idx], curr_sub$startpos)
 
     # Validate SNPs are within the assigned segment's endpos
@@ -946,6 +946,7 @@ plot_gw_subclonal_cn <- function(subclones, BAFvals, rho, ploidy, goodness,
   segment_states_tot <- segment_states_maj + segment_states_min
 
   # Determine which SNPs are on which chromosome, to be used as a proxy for chromosome size in the plots
+  # BAFvals$Chromosome and chr_names are already normalized above
   chr_segs <- lapply(seq_along(chr_names), function(ch) {
     which(BAFvals$Chromosome == chr_names[ch])
   })
@@ -1120,6 +1121,14 @@ callChrXsubclones <- function(
   # Segmentation with optional prior breakpoints
   if (!is.null(prior_breakpoints_file)) {
     sv_data <- data.table::fread(prior_breakpoints_file, data.table = FALSE)
+    colnames(sv_data) <- tolower(colnames(sv_data))
+    colnames(sv_data)[colnames(sv_data) %in% c("chromosome")] <- "chr"
+    colnames(sv_data)[colnames(sv_data) %in% c("position")] <- "pos"
+
+    if (!all(c("chr", "pos") %in% colnames(sv_data))) {
+      log_failure("Prior breakpoints file for ChrX must contain 'chromosome'/'chr' and 'position'/'pos' columns. Found: {paste(colnames(sv_data), collapse=', ')}")
+    }
+
     sv_x <- sv_data[sv_data$chr %in% c("X", "chrX"), ]
 
     if (nrow(sv_x) > 0) {

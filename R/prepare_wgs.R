@@ -1,172 +1,220 @@
-#' Obtain BAF and LogR from the allele counts (Optimized)
+#' Obtain BAF and LogR from the allele counts (Memory Optimized)
 #' @export
 getBAFsAndLogRs <- function(tumourAlleleCountsFile.prefix, normalAlleleCountsFile.prefix, figuresFile.prefix, BAFnormalFile, BAFmutantFile, logRnormalFile, logRmutantFile, combinedAlleleCountsFile, chr_names, g1000file.prefix, minCounts = NA, samplename = "sample1", seed = as.integer(Sys.time())) {
   set.seed(seed)
 
-  # Fast data loading
-  input_data <- concatenateAlleleCountFiles(tumourAlleleCountsFile.prefix, ".txt", chr_names)
-  normal_input_data <- concatenateAlleleCountFiles(normalAlleleCountsFile.prefix, ".txt", chr_names)
-  allele_data <- concatenateG1000SnpFiles(g1000file.prefix, ".txt", chr_names)
+  # Initialize files (delete if already exists to avoid double-appending)
+  out_files <- c(BAFnormalFile, BAFmutantFile, logRnormalFile, logRmutantFile, combinedAlleleCountsFile)
+  for (f in out_files) if (file.exists(f)) file.remove(f)
 
-  log_info(
-    "Data Loading Complete: Tumour {nrow(input_data)} rows, Normal {nrow(normal_input_data)} rows, G1000 Ref {nrow(allele_data)} rows",
-  )
+  # Containers for thinned plotting data (to prevent graphical OOM)
+  plot_data_list <- list()
+  total_snps_processed <- 0
 
-  # Efficient chr prefix stripping
-  allele_data[[1]] <- gsub("chr", "", allele_data[[1]])
-  normal_input_data[[1]] <- gsub("chr", "", normal_input_data[[1]])
-  input_data[[1]] <- gsub("chr", "", input_data[[1]])
+  for (chrom in chr_names) {
+    log_info("Processing chromosome {chrom}...")
 
-  # Fast Synchronisation: Using match/joins is faster than Reduce(intersect(paste))
-  # To maintain pixel-perfect parity with the 'paste' key logic:
-  key_allele <- paste0(allele_data[[1]], "_", allele_data[[2]])
-  key_normal <- paste0(normal_input_data[[1]], "_", normal_input_data[[2]])
-  key_tumour <- paste0(input_data[[1]], "_", input_data[[2]])
+    # Load data for THIS chromosome only
+    input_data <- concatenateAlleleCountFiles(tumourAlleleCountsFile.prefix, ".txt", chrom)
+    normal_input_data <- concatenateAlleleCountFiles(normalAlleleCountsFile.prefix, ".txt", chrom)
+    allele_data <- concatenateG1000SnpFiles(g1000file.prefix, ".txt", chrom)
 
-  # Find common keys
-  common_keys <- intersect(intersect(key_allele, key_normal), key_tumour)
+    log_info("  - Raw SNPs: Tumour={nrow(input_data)}, Normal={nrow(normal_input_data)}, G1000={nrow(allele_data)}")
 
-  # Filter data frames
-  allele_data <- allele_data[collapse::fmatch(common_keys, key_allele), ]
-  normal_input_data <- normal_input_data[collapse::fmatch(common_keys, key_normal), ]
-  input_data <- input_data[collapse::fmatch(common_keys, key_tumour), ]
+    if (nrow(input_data) == 0 || nrow(normal_input_data) == 0 || nrow(allele_data) == 0) {
+      log_warning("  - Missing data for chromosome {chrom}. Skipping.")
+      next
+    }
 
-  log_info("Sync complete. Remaining SNPs: {nrow(input_data)}")
+    # Convert to data.table
+    data.table::setDT(input_data)
+    data.table::setDT(normal_input_data)
+    data.table::setDT(allele_data)
 
-  rm(key_allele, key_normal, key_tumour, common_keys)
+    # Standardize
+    input_data[[1]] <- gsub("chr", "", as.character(input_data[[1]]))
+    normal_input_data[[1]] <- gsub("chr", "", as.character(normal_input_data[[1]]))
+    allele_data[[1]] <- gsub("chr", "", as.character(allele_data[[1]]))
 
-  names(input_data)[1] <- "CHR"
-  names(normal_input_data)[1] <- "CHR"
-  # Using matrix indexing for fast extraction
-  norm_m <- as.matrix(normal_input_data[, 3:6])
-  mut_m <- as.matrix(input_data[, 3:6])
+    names(allele_data)[1:4] <- c("CHR", "POS", "A0", "A1")
+    names(normal_input_data)[1:7] <- c("CHR", "POS", "nCountA", "nCountC", "nCountG", "nCountT", "nDepth")
+    names(input_data)[1:7] <- c("CHR", "POS", "tCountA", "tCountC", "tCountG", "tCountT", "tDepth")
 
-  # Map alleles to counts
-  len <- nrow(norm_m)
+    # Ensure types match for join
+    input_data[, `:=`(CHR = as.character(CHR), POS = as.integer(POS))]
+    normal_input_data[, `:=`(CHR = as.character(CHR), POS = as.integer(POS))]
+    allele_data[, `:=`(CHR = as.character(CHR), POS = as.integer(POS))]
 
-  idx_matrix <- cbind(seq_len(len), as.integer(allele_data[[3]]))
-  idx_matrix2 <- cbind(seq_len(len), as.integer(allele_data[[4]]))
+    # Fast Join logic
+    data.table::setkey(input_data, CHR, POS)
+    data.table::setkey(normal_input_data, CHR, POS)
+    data.table::setkey(allele_data, CHR, POS)
 
-  # allele_data[,3] and [,4] contain the column indices for A and B alleles
-  normCount1 <- norm_m[idx_matrix]
-  normCount2 <- norm_m[idx_matrix2]
-  mutCount1 <- mut_m[idx_matrix]
-  mutCount2 <- mut_m[idx_matrix2]
+    # Join
+    joined <- normal_input_data[input_data, nomatch = 0]
+    joined <- allele_data[joined, nomatch = 0]
 
-  totalNormal <- normCount1 + normCount2
-  totalMutant <- mutCount1 + mutCount2
+    log_info("  - Synced SNPs: {nrow(joined)}")
 
-  rm(norm_m, mut_m, allele_data, normal_input_data)
+    if (nrow(joined) == 0) {
+      log_warning("  - Zero overlap for chromosome {chrom}. Check reference compatibility.")
+      next
+    }
 
-  # Apply coverage filters
-  indices <- seq_len(nrow(input_data))
-  if (!is.na(minCounts)) {
-    indices <- which(totalNormal >= minCounts & totalMutant >= 1)
-    totalNormal <- totalNormal[indices]
-    totalMutant <- totalMutant[indices]
-    normCount1 <- normCount1[indices]
-    normCount2 <- normCount2[indices]
-    mutCount1 <- mutCount1[indices]
-    mutCount2 <- mutCount2[indices]
+    # cleanup temp objects
+    rm(input_data, normal_input_data, allele_data)
+
+    # Matrix extraction
+    norm_m <- as.matrix(joined[, .(nCountA, nCountC, nCountG, nCountT)])
+    mut_m <- as.matrix(joined[, .(tCountA, tCountC, tCountG, tCountT)])
+
+    len <- nrow(joined)
+    idx_matrix <- cbind(seq_len(len), as.integer(joined$A0))
+    idx_matrix2 <- cbind(seq_len(len), as.integer(joined$A1))
+
+    normCount1 <- norm_m[idx_matrix]
+    normCount2 <- norm_m[idx_matrix2]
+    mutCount1 <- mut_m[idx_matrix]
+    mutCount2 <- mut_m[idx_matrix2]
+
+    totalNormal <- normCount1 + normCount2
+    totalMutant <- mutCount1 + mutCount2
+
+    rm(norm_m, mut_m)
+
+    # Apply coverage filters
+    valid_indices <- seq_len(len)
+    if (!is.na(minCounts)) {
+      valid_indices <- which(totalNormal >= minCounts & totalMutant >= 1)
+      totalNormal <- totalNormal[valid_indices]
+      totalMutant <- totalMutant[valid_indices]
+      normCount1 <- normCount1[valid_indices]
+      normCount2 <- normCount2[valid_indices]
+      mutCount1 <- mutCount1[valid_indices]
+      mutCount2 <- mutCount2[valid_indices]
+    }
+
+    n <- length(valid_indices)
+    log_info("  - Final Filtered SNPs: {n}")
+
+    if (n == 0) {
+      log_warning("  - No SNPs passed coverage filters for {chrom}.")
+      next
+    }
+
+    # BAF/LogR Calc
+    selector <- round(stats::runif(n))
+    is_zero <- selector == 0
+    is_one <- !is_zero
+
+    normalBAF <- numeric(n)
+    mutantBAF <- numeric(n)
+    normalBAF[is_zero] <- normCount1[is_zero] / totalNormal[is_zero]
+    normalBAF[is_one] <- normCount2[is_one] / totalNormal[is_one]
+    mutantBAF[is_zero] <- mutCount1[is_zero] / totalMutant[is_zero]
+    mutantBAF[is_one] <- mutCount2[is_one] / totalMutant[is_one]
+
+    mutantLogR_raw <- totalMutant / totalNormal
+    # Mean shift will be approximate per chromosome here, but we can fix the global mean shift later
+    # Actually, original code used log2(ratio / mean(all_ratios))
+    # For now, let's keep the raw ratio and we'll normalize at the very end of this loop?
+    # No, let's calculate the log2(ratio) and keep the global mean shift in mind.
+    # Actually, we should probably calculate the global mean first...
+    # But that requires loading all ratios.
+    # Let's just use log2(ratio) and we'll shift the file afterwards.
+    tumorLogR_unshifted <- log2(mutantLogR_raw)
+
+    CHR_final <- joined$CHR[valid_indices]
+    POS_final <- joined$POS[valid_indices]
+
+    # Write results appending to disk
+    baseDT <- data.table::data.table(Chromosome = CHR_final, Position = POS_final)
+
+    # Normal BAF
+    baseDT[[samplename]] <- normalBAF
+    data.table::fwrite(baseDT, file = BAFnormalFile, sep = "\t", append = TRUE, col.names = !file.exists(BAFnormalFile))
+
+    # Mutant BAF
+    baseDT[[samplename]] <- mutantBAF
+    data.table::fwrite(baseDT, file = BAFmutantFile, sep = "\t", append = TRUE, col.names = !file.exists(BAFmutantFile))
+
+    # Normal LogR
+    baseDT[[samplename]] <- integer(n)
+    data.table::fwrite(baseDT, file = logRnormalFile, sep = "\t", append = TRUE, col.names = !file.exists(logRnormalFile))
+
+    # Mutant LogR
+    baseDT[[samplename]] <- tumorLogR_unshifted
+    data.table::fwrite(baseDT, file = logRmutantFile, sep = "\t", append = TRUE, col.names = !file.exists(logRmutantFile))
+
+    # Combined counts
+    baseDT[[samplename]] <- NULL
+    combinedDT <- cbind(baseDT, data.table::data.table(
+      mutCountT1 = mutCount1, mutCountT2 = mutCount2,
+      mutCountN1 = normCount1, mutCountN2 = normCount2
+    ))
+    data.table::fwrite(combinedDT, file = combinedAlleleCountsFile, sep = "\t", append = TRUE, col.names = !file.exists(combinedAlleleCountsFile))
+
+    # Thinned plotting data: keep 1 in every 25 SNPs
+    thin_idx <- seq(1, n, by = 25)
+    plot_data_list[[chrom]] <- data.table::data.table(
+      Chromosome = CHR_final[thin_idx],
+      Position = POS_final[thin_idx],
+      Tumor_LogR = tumorLogR_unshifted[thin_idx],
+      Tumor_BAF = mutantBAF[thin_idx],
+      Germline_BAF = normalBAF[thin_idx]
+    )
+
+    total_snps_processed <- total_snps_processed + n
+    rm(joined, baseDT, combinedDT, normalBAF, mutantBAF, tumorLogR_unshifted)
+    gc()
   }
 
-  n <- length(indices)
+  log_info("Sync complete. Total SNPs processed across all chromosomes: {total_snps_processed}")
 
-  # Allele Randomization (Pixel-Perfect logic)
-  # runif(n) generates values in [0,1], round() makes them 0 or 1
-  selector <- round(stats::runif(n))
-  is_zero <- selector == 0
-  is_one <- !is_zero
+  # GLOBAL MEAN SHIFT for LogR (Battenberg requires center at 0)
+  log_info("Performing global LogR mean shift...")
+  # We read the LogR column to calculate the global mean.
+  # vroom is faster for column selection on large files.
+  global_mean <- mean(vroom::vroom(logRmutantFile, col_select = 3, show_col_types = FALSE)[[1]], na.rm = TRUE)
+  log_info("Global LogR Mean: {global_mean}. Shifting values...")
 
-  normalBAF <- numeric(n)
-  mutantBAF <- numeric(n)
+  # Read full file, shift, write. (This is high RAM but only for 2 columns Chrom/Pos + 1 Float)
+  # 28M rows * 3 cols * 8 bytes ≈ 672 MB. Totally safe.
+  full_logr <- data.table::fread(logRmutantFile)
+  full_logr[[3]] <- full_logr[[3]] - global_mean
+  data.table::fwrite(full_logr, file = logRmutantFile, sep = "\t")
+  rm(full_logr)
+  gc()
 
-  normalBAF[is_zero] <- normCount1[is_zero] / totalNormal[is_zero]
-  normalBAF[is_one] <- normCount2[is_one] / totalNormal[is_one]
-  mutantBAF[is_zero] <- mutCount1[is_zero] / totalMutant[is_zero]
-  mutantBAF[is_one] <- mutCount2[is_one] / totalMutant[is_one]
-
-  # LogR Calculation
-  # normalLogR is forced to integer 0 as per original script requirement
-  normalLogR <- integer(n)
-  mutantLogR_raw <- totalMutant / totalNormal
-  tumorLogR_final <- log2(mutantLogR_raw / mean(mutantLogR_raw, na.rm = TRUE))
-
-  # Prepare shared columns
-  CHR_final <- input_data[[1]][indices]
-  POS_final <- input_data[[2]][indices]
-
-  baseDT <- data.table::data.table(
-    Chromosome = CHR_final,
-    Position   = POS_final
-  )
-
-
-  # Write Normal BAF
-  baseDT[[samplename]] <- normalBAF
-  data.table::fwrite(baseDT, file = BAFnormalFile, sep = "\t")
-  log_info("Saved Normal BAF to: {normalizePath(BAFnormalFile, mustWork = FALSE)}")
-
-  # Write Mutant BAF
-  baseDT[[samplename]] <- mutantBAF
-  data.table::fwrite(baseDT, file = BAFmutantFile, sep = "\t")
-  log_info("Saved Mutant BAF to: {normalizePath(BAFmutantFile, mustWork = FALSE)}")
-
-  # Write Normal LogR
-  baseDT[[samplename]] <- normalLogR
-  data.table::fwrite(baseDT, file = logRnormalFile, sep = "\t")
-  log_info("Saved Normal LogR to: {normalizePath(logRnormalFile, mustWork = FALSE)}")
-
-
-  # Write Mutant LogR
-  baseDT[[samplename]] <- tumorLogR_final
-  data.table::fwrite(baseDT, file = logRmutantFile, sep = "\t")
-  log_info("Saved Mutant LogR to: {normalizePath(logRmutantFile, mustWork = FALSE)}")
-
-  # Write Combined Allele Counts
-  # We use a standard data.table definition here which is safe from list-bloat
-  baseDT[[samplename]] <- NULL # Clean up the sample column before combining
-  combinedDT <- cbind(baseDT, data.table::data.table(
-    mutCountT1 = mutCount1,
-    mutCountT2 = mutCount2,
-    mutCountN1 = normCount1,
-    mutCountN2 = normCount2
-  ))
-
-  data.table::fwrite(combinedDT, file = combinedAlleleCountsFile, sep = "\t")
-  log_info("Saved combined Allele Counts to: {normalizePath(combinedAlleleCountsFile, mustWork = FALSE)}")
-
-  # Plotting Setup
-  # Re-using vectors to build the ASCAT list object without re-reading files
-  SNPpos <- data.frame(
-    Chromosome = CHR_final,
-    Position = POS_final,
-    stringsAsFactors = FALSE
-  )
-
-  # Optimized 'ch' list creation
+  # CONSTRUCT PLOTTING OBJECT (FROM THINNED DATA)
+  log_info("Constructing thinned ASCAT plot...")
+  plot_data <- data.table::rbindlist(plot_data_list)
+  # Standardize Chromosome names for ASCAT factor sorting
   ch <- lapply(chr_names, function(x) {
-    tmp <- which(SNPpos$Chromosome == x)
+    # Match robustly (handling both '1' and 'chr1' in the data)
+    normalized_data_chrs <- gsub("chr", "", as.character(plot_data$Chromosome))
+    normalized_target_chr <- gsub("chr", "", as.character(x))
+    tmp <- which(normalized_data_chrs == normalized_target_chr)
+
     if (length(tmp) == 0) {
-      return(0)
+      return(numeric(0))
     }
     return(tmp[1]:tmp[length(tmp)])
   })
 
   ascat_bc <- list(
-    Tumor_LogR = data.frame(tumorLogR_final),
-    Tumor_BAF = data.frame(mutantBAF),
-    Germline_LogR = data.frame(normalLogR),
-    Germline_BAF = data.frame(normalBAF),
+    Tumor_LogR = data.frame(plot_data$Tumor_LogR - global_mean),
+    Tumor_BAF = data.frame(plot_data$Tumor_BAF),
+    Germline_LogR = data.frame(integer(nrow(plot_data))),
+    Germline_BAF = data.frame(plot_data$Germline_BAF),
     Tumor_LogR_segmented = NULL, Tumor_BAF_segmented = NULL,
     Tumor_counts = NULL, Germline_counts = NULL,
-    SNPpos = SNPpos,
+    SNPpos = data.frame(Chromosome = plot_data$Chromosome, Position = plot_data$Position, stringsAsFactors = FALSE),
     chrs = chr_names,
     samples = samplename,
-    chrom = split_genome(SNPpos),
+    chrom = split_genome(plot_data[, 1:2]),
     ch = ch
   )
-
   ASCAT::ascat.plotRawData(ascat_bc)
 }
 
@@ -204,22 +252,22 @@ generate_impute_input_wgs <- function(
 
   # Filter out 'problem' SNPs (BAF streaks)
   if (!is.na(problem_loci_file) && problem_loci_file != "NA") {
-    problem_snps_raw <- data.table::fread(problem_loci_file, header = TRUE, sep = "\t", data.table = FALSE)
+    problem_snps_raw <- data.table::fread(problem_loci_file, header = TRUE, sep = "auto", data.table = FALSE)
     problem_positions <- problem_snps_raw$Pos[problem_snps_raw$Chr == chrom_name]
     known_SNPs <- known_SNPs[!(known_SNPs$position %in% problem_positions), ]
   }
 
   # Filter for 'good' SNPs (e.g., SNP6 positions)
   if (!is.na(use_loci_file) && use_loci_file != "NA") {
-    good_snps_raw <- data.table::fread(use_loci_file, header = TRUE, sep = "\t", data.table = FALSE)
+    good_snps_raw <- data.table::fread(use_loci_file, header = TRUE, sep = "auto", data.table = FALSE)
     good_positions <- good_snps_raw$pos[good_snps_raw$chr == chrom_name]
     known_SNPs <- known_SNPs[known_SNPs$position %in% good_positions, ]
   }
 
   # Load allele counts using fread (ignoring comments)
   # Tumour and Normal are combined column-wise to match legacy indexing
-  snp_tumour <- data.table::fread(tumour_allele_counts_file, sep = "\t", header = FALSE, data.table = FALSE)
-  snp_normal <- data.table::fread(normal_allele_counts_file, sep = "\t", header = FALSE, data.table = FALSE)
+  snp_tumour <- data.table::fread(tumour_allele_counts_file, sep = "auto", header = FALSE, data.table = FALSE)
+  snp_normal <- data.table::fread(normal_allele_counts_file, sep = "auto", header = FALSE, data.table = FALSE)
 
   # Combined data: [Tumour Cols 1-6] [Normal Cols 7-12]
   snp_combined <- cbind(snp_tumour, snp_normal)
@@ -290,168 +338,264 @@ generate_impute_input_wgs <- function(
 #' @param recalc_corr_afterwards Set to TRUE to recalculate correlations after correction
 #' @author jdemeul, sd11
 #' @export
-gc_correct_wgs <- function(
-  Tumour_LogR_file,
-  outfile,
-  correlations_outfile,
-  gc_content_file_prefix,
-  replic_timing_file_prefix,
-  chrom_names,
-  recalc_corr_afterwards = FALSE,
-  debug = FALSE
-) {
-  # :: syntax used
-  # Pure comments instead of numbering
+gc_correct_wgs <- function(Tumour_LogR_file, outfile, correlations_outfile, gc_content_file_prefix, replic_timing_file_prefix, chrom_names) {
+  if (is.null(gc_content_file_prefix)) log_failure("GC content reference files must be supplied")
 
-  if (is.null(gc_content_file_prefix)) {
-    log_failure("GC content reference files must be supplied")
+  log_info("Starting two-pass memory-optimized GC correction...")
+
+  # Helper to identify reference file properties (names, index presence)
+  get_ref_info <- function(f) {
+    if (!file.exists(f)) {
+      return(NULL)
+    }
+    # Use suppressWarnings ONLY once to peek at the format
+    h_orig <- suppressWarnings(names(data.table::fread(f, nrows = 0)))
+    d_check <- suppressWarnings(data.table::fread(f, nrows = 5, header = FALSE))
+    has_idx <- ncol(d_check) > length(h_orig)
+
+    h_clean <- h_orig
+    if ("chr" %in% h_clean) h_clean[h_clean == "chr"] <- "Chromosome"
+    if ("pos" %in% h_clean) h_clean[h_clean == "pos"] <- "Position"
+    wins <- setdiff(h_clean, c("Chromosome", "Position"))
+
+    return(list(has_index = has_idx, orig_names = h_orig, clean_names = h_clean, win_cols = wins))
   }
 
-  Tumor_LogR <- read_logr(Tumour_LogR_file)
-
-  # Efficiently load and combine GC data
-  # Efficiently load and combine GC data using vroom
-  gc_files <- paste0(gc_content_file_prefix, chrom_names, ".txt.gz")
-  GC_data <- vroom::vroom(gc_files, delim = "\t", show_col_types = FALSE)
-
-  # Clean up the GC_data headers
-  # The first column is often a duplicate of the third; we remove it safely
-  correct_headers <- colnames(GC_data)[2:ncol(GC_data)]
-  GC_data <- GC_data[, -1]
-  colnames(GC_data) <- trimws(correct_headers)
-  data.table::setnames(GC_data, old = 1:2, new = c("Chromosome", "Position"))
-
-  # Processing replication data if prefix is provided
-  has_replic <- !is.null(replic_timing_file_prefix)
-  if (has_replic) {
-    replic_files <- paste0(replic_timing_file_prefix, chrom_names, ".txt.gz")
-    replic_data <- vroom::vroom(replic_files, delim = "\t", show_col_types = FALSE)
-    colnames(replic_data) <- trimws(colnames(replic_data))
-    if ("pos" %in% colnames(replic_data)) data.table::setnames(replic_data, "pos", "Position")
-    if ("chr" %in% colnames(replic_data)) data.table::setnames(replic_data, "chr", "Chromosome")
-  }
-
-  # Fast Loci Matching
-  logr_key <- paste0(Tumor_LogR$Chromosome, "_", Tumor_LogR$Position)
-  gc_key <- paste0(GC_data$Chromosome, "_", GC_data$Position)
-  locimatches <- match(logr_key, gc_key)
-
-  num_matches <- sum(!is.na(locimatches))
-  log_info("Alignment check: {num_matches} / {nrow(Tumor_LogR)} positions matched.")
-
-  if (num_matches == 0) {
-    log_failure("Zero overlap found! Check if LogR is hg19 while GC refs are hg38.")
-  }
-
-
-  valid_idx <- which(!is.na(locimatches))
-  matched_gc <- locimatches[valid_idx]
-
-  # Subsetting objects to matched rows
-  Tumor_LogR <- Tumor_LogR[valid_idx, ]
-  GC_data <- GC_data[matched_gc, ]
-  if (has_replic) replic_data <- replic_data[matched_gc, ]
-
-  # Clean up memory
-  rm(logr_key, gc_key, locimatches)
-
-  # Calculate correlations and identify best window sizes
-  # We use collapse::pwcor for speed
-  corr <- collapse::pwcor(GC_data[, 3:ncol(GC_data)], Tumor_LogR[[3]], use = "pairwise.complete.obs")
-  corr <- abs(corr[, 1])
-
-  # instead of capping it at 100kb go to the end of the frame
-  index_2kb <- which(names(corr) == "2kb")
-  if (length(index_2kb) == 0) {
-    # Fallback or logical guess if 2kb missing
-    log_warning("GC Correction: '2kb' column not found in GC headers. Using first 50% for insert, last 50% for amplic.")
-    mid_point <- floor(length(corr) / 2)
-    index_2kb <- mid_point
-  }
-
-  maxGCcol_insert <- names(which.max(corr[1:index_2kb]))
-
-  if (index_2kb < length(corr)) {
-    maxGCcol_amplic <- names(which.max(corr[(index_2kb + 1):length(corr)]))
-  } else {
-    maxGCcol_amplic <- maxGCcol_insert
-  }
-
-  index_100kb <- which(names(corr) == "100kb") # Unused variable in current logic but kept for consistency if needed later?
-  # Actually line 368 in original redefined maxGCcol_amplic using index_100kb?
-  # Original Line 368: maxGCcol_amplic <- names(which.max(corr[(index_2kb + 2):index_100kb]))
-  # This implies if 100kb exists, we restrict search?
-
-  if (length(index_100kb) > 0 && index_100kb > index_2kb) {
-    # Refine amplic search to be between 2kb and 100kb
-    start_idx <- index_2kb + 1
-    end_idx <- index_100kb
-    if (end_idx >= start_idx) {
-      maxGCcol_amplic <- names(which.max(corr[start_idx:end_idx]))
+  # Helper to load reference files robustly without causing fread warnings
+  load_ref_dt <- function(f, info) {
+    if (info$has_index) {
+      dt <- data.table::fread(f, skip = 1, header = FALSE, col.names = c("V1_idx", info$clean_names))
+      return(dt[, -1, with = FALSE])
+    } else {
+      # Use col.names even if no index to ensure standardized names (Chromosome/Position)
+      dt <- data.table::fread(f, header = TRUE, col.names = info$clean_names)
+      return(dt)
     }
   }
 
-  log_info("GC Correction: Selected Insert Column='{maxGCcol_insert}', Amplic Column='{maxGCcol_amplic}'")
+  # Peeking at the first GC file
+  first_gc_file <- paste0(gc_content_file_prefix, chrom_names[1], ".txt.gz")
+  if (!file.exists(first_gc_file)) log_failure("GC reference file not found: {first_gc_file}")
+  gc_info <- get_ref_info(first_gc_file)
+  win_cols <- gc_info$win_cols
+  log_info("GC Reference Windows: {paste(win_cols, collapse=', ')}")
 
-  # Construct the design matrix for splines
-  # We use intercept = TRUE for the first and FALSE for the others to avoid rank deficiency
+  # Accumulators for cross-genome correlation statistics
+  N_vec <- setNames(numeric(length(win_cols)), win_cols)
+  SX_vec <- setNames(numeric(length(win_cols)), win_cols)
+  SXX_vec <- setNames(numeric(length(win_cols)), win_cols)
+  SXY_vec <- setNames(numeric(length(win_cols)), win_cols)
+  SY <- 0
+  SYY <- 0
+  Total_N <- 0
+
+  has_replic <- !is.null(replic_timing_file_prefix) && !is.na(replic_timing_file_prefix)
+  rep_info <- NULL
+  rep_win_cols <- NULL
   if (has_replic) {
-    corr_rep <- collapse::pwcor(replic_data[, 3:ncol(replic_data)], Tumor_LogR[[3]], use = "pairwise.complete.obs")
-    corr_rep <- abs(corr_rep[, 1])
-    maxreplic <- names(which.max(corr_rep))
-
-    X <- cbind(
-      splines::ns(GC_data[[maxGCcol_insert]], df = 5, intercept = TRUE),
-      splines::ns(GC_data[[maxGCcol_amplic]], df = 5, intercept = FALSE),
-      splines::ns(replic_data[[maxreplic]], df = 5, intercept = FALSE)
-    )
-  } else {
-    X <- cbind(
-      splines::ns(GC_data[[maxGCcol_insert]], df = 5, intercept = TRUE),
-      splines::ns(GC_data[[maxGCcol_amplic]], df = 5, intercept = FALSE)
-    )
+    first_rep_file <- paste0(replic_timing_file_prefix, chrom_names[1], ".txt.gz")
+    rep_info <- get_ref_info(first_rep_file)
+    if (!is.null(rep_info)) {
+      rep_win_cols <- rep_info$win_cols
+      RN_vec <- setNames(numeric(length(rep_win_cols)), rep_win_cols)
+      RSX_vec <- setNames(numeric(length(rep_win_cols)), rep_win_cols)
+      RSXX_vec <- setNames(numeric(length(rep_win_cols)), rep_win_cols)
+      RSXY_vec <- setNames(numeric(length(rep_win_cols)), rep_win_cols)
+    } else {
+      has_replic <- FALSE
+    }
   }
 
-  y <- as.numeric(Tumor_LogR[[3]])
+  log_info("Pass 1: Identifying best GC windows via online correlation accumulation...")
+  all_logr <- data.table::fread(Tumour_LogR_file) # High but manageable RAM usage
+  all_logr[, `:=`(Chromosome = gsub("chr", "", as.character(Chromosome)), Position = as.integer(Position))]
+  data.table::setkey(all_logr, Chromosome, Position)
 
-  # Robust Linear Model fitting
-  # We use stats::lm.fit directly for a balance of speed and numerical stability
-  # It is faster than lm() but more stable than flm() for splines
-  keep_idx <- stats::complete.cases(X) & !is.na(y)
-  fit <- stats::lm.fit(x = as.matrix(X[keep_idx, ]), y = y[keep_idx])
+  for (cn in chrom_names) {
+    log_info("  - Pass 1: Processing {cn}...")
+    gc_f <- paste0(gc_content_file_prefix, cn, ".txt.gz")
+    if (!file.exists(gc_f)) next
+    dt_gc <- load_ref_dt(gc_f, gc_info)
+    dt_gc[, `:=`(Chromosome = gsub("chr", "", as.character(Chromosome)), Position = as.integer(Position))]
+    sub_logr <- all_logr[gsub("chr", "", as.character(cn))]
 
-  # Calculate residuals and cap them to remove outliers
-  resids <- rep(NA, length(y))
-  resids[keep_idx] <- fit$residuals
-  resids <- pmax(pmin(resids, 5), -5)
+    if (nrow(sub_logr) == 0) next
 
-  # Metrics for noise reduction
-  sd_before <- stats::sd(y, na.rm = TRUE)
-  sd_after <- stats::sd(resids, na.rm = TRUE)
-  reduction <- ((sd_before - sd_after) / sd_before) * 100
+    data.table::setkey(dt_gc, Position)
+    data.table::setkey(sub_logr, Position)
+    m <- dt_gc[sub_logr, nomatch = 0]
+    log_info("    - Joined with GC: {nrow(m)} SNPs")
+    if (nrow(m) == 0) next
 
-  # Apply corrected LogR
-  Tumor_LogR[[3]] <- resids
+    y <- as.numeric(m[[ncol(m)]])
+    SY <- SY + sum(y, na.rm = TRUE)
+    SYY <- SYY + sum(y^2, na.rm = TRUE)
+    Total_N <- Total_N + length(y)
 
-  # Log results
+    for (w in win_cols) {
+      if (!w %in% names(m)) next
+      x <- as.numeric(m[[w]])
+      valid <- !is.na(x) & !is.na(y)
+      N_vec[w] <- N_vec[w] + sum(valid)
+      SX_vec[w] <- SX_vec[w] + sum(x[valid])
+      SXX_vec[w] <- SXX_vec[w] + sum(x[valid]^2)
+      SXY_vec[w] <- SXY_vec[w] + sum(x[valid] * y[valid])
+    }
 
-  # Post-correction correlation check
-  corr_post_short <- abs(stats::cor(resids[keep_idx], GC_data[[maxGCcol_insert]][keep_idx], use = "complete.obs"))
-  corr_post_long <- abs(stats::cor(resids[keep_idx], GC_data[[maxGCcol_amplic]][keep_idx], use = "complete.obs"))
+    if (has_replic) {
+      rep_f <- paste0(replic_timing_file_prefix, cn, ".txt.gz")
+      if (file.exists(rep_f)) {
+        dt_rep <- load_ref_dt(rep_f, rep_info)
+        dt_rep[, `:=`(Chromosome = gsub("chr", "", as.character(Chromosome)), Position = as.integer(Position))]
+        data.table::setkey(dt_rep, Position)
+        mr <- dt_rep[m, nomatch = 0]
+        log_info("    - Joined with Replication: {nrow(mr)} SNPs")
+        if (nrow(mr) > 0) {
+          yr <- as.numeric(mr[[ncol(mr)]])
+          for (rw in rep_win_cols) {
+            if (!rw %in% names(mr)) next
+            rx <- as.numeric(mr[[rw]])
+            v <- !is.na(rx) & !is.na(yr)
+            RN_vec[rw] <- RN_vec[rw] + sum(v)
+            RSX_vec[rw] <- RSX_vec[rw] + sum(rx[v])
+            RSXX_vec[rw] <- RSXX_vec[rw] + sum(rx[v]^2)
+            RSXY_vec[rw] <- RSXY_vec[rw] + sum(rx[v] * yr[v])
+          }
+        }
+        rm(dt_rep, mr)
+      }
+    }
+    rm(dt_gc, m, sub_logr)
+    gc()
+  }
 
-  # Glue Log: Interpretation block
-  log_info("Noise Reduction (SD): {round(reduction, 2)}%")
-  log_info("Residual Correlation (Short): {round(corr_post_short, 4)} (Target: ~0)")
-  log_info("Residual Correlation (Long): {round(corr_post_long, 4)} (Target: ~0)")
-  log_info("LogR Mean Shift: {round(mean(resids, na.rm=TRUE), 6)} (Target: 0)")
+  calc_corr <- function(n, sx, sy, sxx, syy, sxy) {
+    num <- (n * sxy) - (sx * sy)
+    den <- sqrt(pmax(0, (n * sxx - sx^2) * (n * syy - sy^2)))
+    return(ifelse(den == 0, 0, num / den))
+  }
+  corrs <- sapply(win_cols, function(w) unname(abs(calc_corr(N_vec[w], SX_vec[w], SY, SXX_vec[w], SYY, SXY_vec[w]))))
 
-  # Write corrected LogR
-  data.table::fwrite(
-    x = Tumor_LogR[!is.na(Tumor_LogR[[3]]), ],
-    file = outfile,
-    sep = "\t",
-    quote = FALSE
-  )
+  index_2kb <- which(names(corrs) == "2kb")
+  if (length(index_2kb) == 0) index_2kb <- floor(length(corrs) / 2)
+  maxGCcol_insert <- names(which.max(corrs[1:index_2kb]))
+  maxGCcol_amplic <- names(which.max(corrs[(index_2kb + 1):length(corrs)]))
+  index_100kb <- which(names(corrs) == "100kb")
+  if (length(index_100kb) > 0 && index_100kb > index_2kb) maxGCcol_amplic <- names(which.max(corrs[(index_2kb + 1):index_100kb]))
+
+  maxreplic <- NULL
+  if (has_replic) {
+    corrs_rep <- sapply(rep_win_cols, function(w) unname(abs(calc_corr(RN_vec[w], RSX_vec[w], SY, RSXX_vec[w], SYY, RSXY_vec[w]))))
+    maxreplic <- names(which.max(corrs_rep))
+  }
+  log_info("Selected Windows: Insert={maxGCcol_insert}, Amplic={maxGCcol_amplic}, Rep={maxreplic}")
+
+  # Pass 2: Online Linear Regression (Accumulate X'X and X'y)
+  log_info("Pass 2: Accumulating matrix cross-products for the spline model...")
+  XtX <- NULL
+  Xty <- NULL
+
+  for (cn in chrom_names) {
+    log_info("  - Pass 2: Processing {cn}...")
+    gc_f <- paste0(gc_content_file_prefix, cn, ".txt.gz")
+    if (!file.exists(gc_f)) next
+    dt_gc <- load_ref_dt(gc_f, gc_info)
+    dt_gc[, `:=`(Chromosome = gsub("chr", "", as.character(Chromosome)), Position = as.integer(Position))]
+
+    sub_logr <- all_logr[gsub("chr", "", as.character(cn))]
+
+    data.table::setkey(dt_gc, Position)
+    data.table::setkey(sub_logr, Position)
+    m <- dt_gc[sub_logr, nomatch = 0]
+    log_info("    - Joined for regression: {nrow(m)} SNPs")
+    if (nrow(m) == 0) next
+
+    Xi <- cbind(splines::ns(m[[maxGCcol_insert]], df = 5, intercept = TRUE), splines::ns(m[[maxGCcol_amplic]], df = 5, intercept = FALSE))
+    if (has_replic) {
+      rep_f <- paste0(replic_timing_file_prefix, cn, ".txt.gz")
+      dt_rep <- load_ref_dt(rep_f, rep_info)
+      dt_rep[, `:=`(Chromosome = gsub("chr", "", as.character(Chromosome)), Position = as.integer(Position))]
+
+      data.table::setkey(dt_rep, Position)
+      mr <- dt_rep[m, nomatch = 0]
+      Xi <- cbind(Xi, splines::ns(mr[[maxreplic]], df = 5, intercept = FALSE))
+      y_i <- as.numeric(mr[[ncol(mr)]])
+      rm(dt_rep, mr)
+    } else {
+      y_i <- as.numeric(m[[ncol(m)]])
+    }
+
+    # Remove NAs which break splineDesign/solve
+    keep <- rowSums(is.na(Xi)) == 0 & !is.na(y_i)
+    if (sum(keep) < 20) {
+      rm(dt_gc, m, Xi, y_i)
+      next
+    }
+    Xi <- Xi[keep, , drop = FALSE]
+    y_i <- y_i[keep]
+
+    if (is.null(XtX)) {
+      n_cols <- ncol(Xi)
+      XtX <- matrix(0, n_cols, n_cols)
+      Xty <- numeric(n_cols)
+    }
+
+    XtX <- XtX + t(Xi) %*% Xi
+    Xty <- Xty + t(Xi) %*% y_i
+    rm(dt_gc, m, Xi, y_i)
+    gc()
+  }
+
+  beta <- solve(XtX, Xty)
+  log_info("Pass 3: Calculating and writing residuals...")
+  if (file.exists(outfile)) file.remove(outfile)
+
+  # Final pass to write results
+  for (cn in chrom_names) {
+    log_info("  - Pass 3: Writing {cn}...")
+    gc_f <- paste0(gc_content_file_prefix, cn, ".txt.gz")
+    if (!file.exists(gc_f)) next
+    dt_gc <- load_ref_dt(gc_f, gc_info)
+    dt_gc[, `:=`(Chromosome = gsub("chr", "", as.character(Chromosome)), Position = as.integer(Position))]
+
+    sub_logr <- all_logr[gsub("chr", "", as.character(cn))]
+    data.table::setkey(dt_gc, Position)
+    data.table::setkey(sub_logr, Position)
+    m <- dt_gc[sub_logr, nomatch = 0]
+    log_info("    - Joined for output: {nrow(m)} SNPs")
+    if (nrow(m) == 0) next
+
+    Xi <- cbind(splines::ns(m[[maxGCcol_insert]], df = 5, intercept = TRUE), splines::ns(m[[maxGCcol_amplic]], df = 5, intercept = FALSE))
+    if (has_replic) {
+      rep_f <- paste0(replic_timing_file_prefix, cn, ".txt.gz")
+      dt_rep <- load_ref_dt(rep_f, rep_info)
+      dt_rep[, `:=`(Chromosome = gsub("chr", "", as.character(Chromosome)), Position = as.integer(Position))]
+
+      data.table::setkey(dt_rep, Position)
+      mr <- dt_rep[m, nomatch = 0]
+      Xi_rep <- splines::ns(mr[[maxreplic]], df = 5, intercept = FALSE)
+
+      # For output, we apply logic to each row. But since we filtered with joins,
+      # we need to be careful. Splines ns() will return NA for rows with NA input.
+      # residual = y - X * beta
+      # We'll do it in a robust way:
+      Xi_full <- cbind(Xi, Xi_rep)
+      y_full <- as.numeric(mr[[ncol(mr)]])
+      residuals <- y_full - (Xi_full %*% beta)
+
+      out_dt <- mr[, 1:2]
+      out_dt$LogR <- as.numeric(residuals)
+      rm(dt_rep, mr, Xi_rep, Xi_full)
+    } else {
+      residuals <- as.numeric(m[[ncol(m)]]) - (Xi %*% beta)
+      out_dt <- m[, 1:2]
+      out_dt$LogR <- as.numeric(residuals)
+    }
+    out_dt$LogR <- pmax(pmin(out_dt$LogR, 5), -5)
+    data.table::fwrite(out_dt, file = outfile, sep = "\t", append = TRUE, col.names = !file.exists(outfile))
+    rm(dt_gc, m, Xi, out_dt)
+    gc()
+  }
 }
 
 #' Prepare WGS data for haplotype construction
@@ -528,6 +672,8 @@ prepare_wgs <- function(
     replic_timing_file_prefix = repliccorrectprefix,
     chrom_names = chrom_names
   )
+
+  log_info("Battenberg WGS preparation complete. Corrected LogR written to: {paste(tumourname, '_mutantLogR_gcCorrected.tab', sep='')}")
 }
 
 #' A helper function to split the genome into parts

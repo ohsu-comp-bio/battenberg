@@ -234,12 +234,26 @@ create_bb_plot_average <- function(
 
   # Plot the vertical lines that show start/end of a chromosome
   chrk_tot_len <- 0
+  num_chrs <- length(chr_segs)
+  # Total width of the plot in units of SNPs
+  total_width <- nrow(bafsegmented)
+
   for (i in seq_along(chr_segs)) {
     chrk <- chr_segs[[i]]
     chrk_tot_len_prev <- chrk_tot_len
-    chrk_tot_len <- chrk_tot_len + length(chrk)
+
+    # Robust length handling: if a chromosome has no SNPs, we give it a tiny virtual width
+    # to prevent labels from overlapping at the exact same x-coordinate.
+    chr_width <- length(chrk)
+    if (chr_width == 0) {
+      chr_width <- total_width / (num_chrs * 10) # 1% of an average chromosome width
+    }
+
+    chrk_tot_len <- chrk_tot_len + chr_width
     vpos <- chrk_tot_len
     tpos <- (chrk_tot_len + chrk_tot_len_prev) / 2
+
+    # Draw separator and label
     graphics::text(tpos, ylim, chr_names[i], pos = 1, cex = 2)
     graphics::abline(v = vpos, lty = 1, col = "lightgrey")
   }

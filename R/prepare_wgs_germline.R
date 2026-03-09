@@ -21,10 +21,12 @@ germline_baf_logR <- function(GERMLINENAME, g1000alleles_prefix, chrom_names) {
     if (!file.exists(ac_file) || file.size(ac_file) == 0) {
       log_failure("Allele count file '{ac_file}' is missing or empty. Preprocessing cannot continue.")
     }
-    ac <- data.table::fread(ac_file, header = FALSE, stringsAsFactors = FALSE)
+    ac <- data.table::fread(ac_file, header = FALSE, sep = "auto", stringsAsFactors = FALSE)
     if (nrow(ac) == 0) {
       log_failure("Allele count file '{ac_file}' contains no data.")
     }
+    # Ensure column 2 (Position) is numeric for sorting
+    if (!is.numeric(ac[[2]])) ac[[2]] <- as.numeric(ac[[2]])
     data.table::setorder(ac, V2)
     AC[[chr]] <- ac
     log_info("length(AC): '{length(AC)}'")
@@ -34,15 +36,16 @@ germline_baf_logR <- function(GERMLINENAME, g1000alleles_prefix, chrom_names) {
     if (!file.exists(al_file) || file.size(al_file) == 0) {
       log_failure("1000G alleles file '{al_file}' is missing or empty.")
     }
-    al <- data.table::fread(al_file, header = TRUE, stringsAsFactors = FALSE)
+    al <- data.table::fread(al_file, header = TRUE, sep = "auto", stringsAsFactors = FALSE)
     if (nrow(al) == 0) {
       log_failure("1000G alleles file '{al_file}' contains no data.")
     }
     AL[[chr]] <- al
     log_info("length(AL): '{length(AL)}'")
 
-    ref <- al$a0
-    alt <- al$a1
+    # Explicitly cast to integer for matrix indexing safety
+    ref <- as.integer(al$a0)
+    alt <- as.integer(al$a1)
 
     # Matrix indexing for lightning-fast extraction
     m_ac <- as.matrix(ac)
@@ -79,7 +82,8 @@ germline_baf_logR <- function(GERMLINENAME, g1000alleles_prefix, chrom_names) {
   }
 
   # CREATE mutantBAF and mutantLogR *.tab files #
-  germline <- GERMLINENAME
+  # Use basename to ensure outputs land in the current directory, not the input counts directory
+  germline <- basename(GERMLINENAME)
 
   # Assemble MAC efficiently (O(N))
   MAC_list <- lapply(chrom_names, function(chr) {
@@ -976,11 +980,13 @@ gc_correct_wgs_germline <- function(germline_LogR_file, outfile, correlations_ou
     replic_data <- data.table::rbindlist(lapply(replic_files, read_replication))
   }
 
-  # Efficient Loci Synchronization
-  key_logr <- paste0(Germline_LogR$Chromosome, "_", Germline_LogR$Position)
-  key_gc <- paste0(GC_data$chr, "_", GC_data$Position)
+  # Fast Loci Synchronization - strip 'chr' from keys for maximum alignment
+  logr_chr <- gsub("chr", "", as.character(Germline_LogR$Chromosome))
+  gc_chr <- gsub("chr", "", as.character(GC_data$Chromosome))
+  key_logr <- paste0(logr_chr, "_", Germline_LogR$Position)
+  key_gc <- paste0(gc_chr, "_", GC_data$Position)
 
-  locimatches <- collapse::fmatch(key_logr, key_gc)
+  locimatches <- match(key_logr, key_gc)
 
   valid_idx <- which(!is.na(locimatches))
   matched_gc_idx <- locimatches[valid_idx]

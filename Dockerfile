@@ -33,7 +33,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     r-base \
     r-base-dev \
-    openjdk-17-jdk \
+    openjdk-17-jre-headless \
     libcurl4-gnutls-dev \
     libxml2-dev \
     libssl-dev \
@@ -47,7 +47,6 @@ RUN apt-get update && apt-get install -y \
     make \
     curl \
     git \
-    r-cran-rgl \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. OPTIMIZATION: Configure Posit Binary Repository for Ubuntu Noble

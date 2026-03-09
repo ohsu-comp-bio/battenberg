@@ -15,36 +15,39 @@ run_with_error_handling <- function(iterator, func, libs, nthreads = 1) {
   }
 
   # Set up foreach to use the registered backend
-  `%dopar%` <- foreach::`%dopar%`
+  # Use %dopar% if a backend is registered and nthreads > 1, else %do%
+  `%op%` <- if (foreach::getDoParWorkers() > 1) foreach::`%dopar%` else foreach::`%do%`
 
-  foreach::foreach(i = iterator) %dopar% {
+  results <- foreach::foreach(i = iterator) %op% {
     # Set thread budget for this worker
     data.table::setDTthreads(nthreads)
     Sys.setenv(OMP_NUM_THREADS = nthreads, MKL_NUM_THREADS = nthreads, OPENBLAS_NUM_THREADS = nthreads)
 
     .libPaths(libs)
 
-    # Wrap in calling handler to capture more context on failure
-    # This remains in parallel but gives us more info if it crashes
-    withCallingHandlers(
+    # Execute the function and capture its result
+    worker_result <- withCallingHandlers(
       {
         func(i)
       },
       error = function(e) {
-        # In parallel workers, stdout/stderr are often captured or redirected.
-        # By using cat() here, it will go to the cluster's outfile,
-        # which we set to the empty string (master's stdout) in battenberg.R.
         msg <- sprintf("!!! BATTENBERG ERROR IN PARALLEL WORKER NODE %s !!!\nMessage: %s\nStack Trace:", i, conditionMessage(e))
         calls <- sys.calls()
         for (j in rev(seq_along(calls))) {
           msg <- paste(msg, sprintf("%d: %s", j, deparse(calls[[j]])), sep = "\n")
         }
         msg <- paste(msg, "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", sep = "\n")
-        # Don't use log_failure here as it causes recursive errors in parallel workers
         stop(msg, call. = FALSE)
       }
     )
+
+    # Trigger garbage collection after each worker finishes its task to free up RAM
+    gc()
+
+    # The last expression in the loop body is what gets returned to the results list
+    worker_result
   }
+  return(results)
 }
 
 #' Safe wrapper for mclapply that prevents deadlocks
