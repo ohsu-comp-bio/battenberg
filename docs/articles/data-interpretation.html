@@ -113,7 +113,7 @@
 <p>The main output file <code>[samplename]_copynumber.txt</code> contains detailed copy number information:</p>
 <div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Read the copy number data</span></span>
-<span><span class="va">cn_data</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/utils/read.table.html" class="external-link">read.delim</a></span><span class="op">(</span><span class="st">"sample_tumor_copynumber.txt"</span><span class="op">)</span></span>
+<span><span class="va">cn_data</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/utils/utils::read.table.html" class="external-link">read.delim</a></span><span class="op">(</span><span class="st">"sample_tumor_copynumber.txt"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Examine the structure</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/head.html" class="external-link">head</a></span><span class="op">(</span><span class="va">cn_data</span><span class="op">)</span></span>
@@ -283,7 +283,7 @@
 </h3>
 <div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Read purity/ploidy file</span></span>
-<span><span class="va">rho_psi</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/utils/read.table.html" class="external-link">read.delim</a></span><span class="op">(</span><span class="st">"sample_tumor_rho_and_psi.txt"</span><span class="op">)</span></span>
+<span><span class="va">rho_psi</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/utils/utils::read.table.html" class="external-link">read.delim</a></span><span class="op">(</span><span class="st">"sample_tumor_rho_and_psi.txt"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Extract values (use second row for FRAC_genome)</span></span>
 <span><span class="va">tumor_purity</span> <span class="op">&lt;-</span> <span class="va">rho_psi</span><span class="op">$</span><span class="va">rho</span><span class="op">[</span><span class="fl">2</span><span class="op">]</span></span>
@@ -386,11 +386,11 @@
 <span>  <span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="va">primary_total_cn</span> <span class="op">!=</span> <span class="fl">2</span><span class="op">)</span>  <span class="co"># Only altered segments</span></span>
 <span></span>
 <span><span class="co"># Write results</span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/utils/write.table.html" class="external-link">write.table</a></span><span class="op">(</span><span class="va">results_table</span>, <span class="st">"battenberg_analysis_results.txt"</span>, </span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/data.table::fwrite.html" class="external-link">data.table::fwrite</a></span><span class="op">(</span><span class="va">results_table</span>, <span class="st">"battenberg_analysis_results.txt"</span>, </span>
 <span>            sep <span class="op">=</span> <span class="st">"\t"</span>, row.names <span class="op">=</span> <span class="cn">FALSE</span>, quote <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Write summary</span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/utils/write.table.html" class="external-link">write.table</a></span><span class="op">(</span><span class="va">analysis_summary</span>, <span class="st">"battenberg_analysis_summary.txt"</span>, </span>
+<span><span class="fu"><a href="https://rdrr.io/r/utils/data.table::fwrite.html" class="external-link">data.table::fwrite</a></span><span class="op">(</span><span class="va">analysis_summary</span>, <span class="st">"battenberg_analysis_summary.txt"</span>, </span>
 <span>            sep <span class="op">=</span> <span class="st">"\t"</span>, row.names <span class="op">=</span> <span class="cn">TRUE</span>, quote <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span></code></pre></div>
 </div>
 </div>

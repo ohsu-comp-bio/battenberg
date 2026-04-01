@@ -1,0 +1,279 @@
+#' Battenberg Command Line Interface
+#' @description Parses command line arguments and executes the main battenberg function.
+#' @export
+battenberg_cli <- function() {
+  options(error = function() {
+    # Get the raw calls
+    calls <- sys.calls()
+
+    msg <- sprintf("Fatal Error: %s\n\n--- Call Stack ---", geterrmessage())
+    for (i in seq_along(calls)) {
+      msg <- paste(msg, sprintf("[%2d] %s", i, deparse(calls[[i]], width.cutoff = 500)[1]), sep = "\n")
+    }
+    log_failure("{msg}")
+    quit(save = "no", status = 1)
+  })
+  options(show.error.messages = TRUE)
+  options(keep.source = TRUE)
+  options(width = 10000)
+  options(warn = 1) # Print warnings immediately
+
+  option_list <- list(
+    # Core Analysis & Sample Info
+    optparse::make_option(c("-a", "--analysis"),
+      type = "character", default = "paired",
+      help = "Analysis type: paired, cell_line, germline"
+    ),
+    optparse::make_option(c("-t", "--samplename"),
+      type = "character",
+      help = "Tumour/Sample identifier"
+    ),
+    optparse::make_option(c("-n", "--normalname"),
+      type = "character",
+      help = "Matched normal identifier"
+    ),
+    optparse::make_option(c("--sample_data_file"),
+      type = "character",
+      help = "BAM/CEL for sample"
+    ),
+    optparse::make_option(c("--normal_data_file"),
+      type = "character",
+      help = "BAM/CEL for normal"
+    ),
+    optparse::make_option(c("--ismale"),
+      type = "logical",
+      default = NA,
+      help = "TRUE/FALSE for donor sex"
+    ),
+
+    # Reference Paths
+    optparse::make_option(c("--reference_info_file"),
+      type = "character", default = NA,
+      help = "Path to the reference info file (formerly impute_info.txt). Optional if beagle_input_dir and chrom_names are provided."
+    ),
+    optparse::make_option(c("--g1000prefix"),
+      type = "character",
+      help = "Prefix for 1000G SNP loci"
+    ),
+    optparse::make_option(c("--g1000allelesprefix"),
+      type = "character",
+      default = NA,
+      help = "Prefix for 1000G alleles"
+    ),
+    optparse::make_option(c("--gccorrectprefix"),
+      type = "character",
+      default = NULL,
+      help = "Prefix for GC correction"
+    ),
+    optparse::make_option(c("--repliccorrectprefix"),
+      type = "character",
+      default = NULL,
+      help = "Prefix for replication timing"
+    ),
+    optparse::make_option(c("--problemloci"),
+      type = "character",
+      help = "Path to problem loci file"
+    ),
+    optparse::make_option(c("--genomebuild"),
+      type = "character",
+      default = "hg38",
+      help = "hg19 or hg38"
+    ),
+    optparse::make_option(c("--chrom_coord_file"),
+      type = "character",
+      default = NULL
+    ),
+    optparse::make_option(c("--chrom_names"),
+      type = "character", default = NULL,
+      help = "Comma-separated list of chromosomes (e.g., 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,X)"
+    ),
+    optparse::make_option(c("--allele_counts_dir"),
+      type = "character", default = NA,
+      help = "Directory containing pre-calculated allele counts"
+    ),
+    optparse::make_option(c("--phasing_results_dir"),
+      type = "character", default = NA,
+      help = "Directory containing pre-calculated phasing results (Impute2 or Beagle)"
+    ),
+
+    # Executables & Hardware
+    optparse::make_option(c("--threads_per_chromosome"),
+      type = "integer", default = 8,
+      help = "Number of threads to use for each chromosome/sample task (Inner parallelism)"
+    ),
+    optparse::make_option(c("--chromosomes_in_parallel"),
+      type = "integer", default = 1,
+      help = "Number of chromosomes to process in parallel during phasing/haplotyping"
+    ),
+    optparse::make_option(c("--data_type"),
+      type = "character", default = "wgs",
+      help = "Type of data: wgs, cell_line, germline, or snp6"
+    ),
+    optparse::make_option(c("--phasing_engine"),
+      type = "character", default = "impute2",
+      help = "Phasing engine to use: impute2 or beagle (default impute2). Auto-detects beagle if --beaglejar is provided."
+    ),
+
+    # Beagle Specifics
+    optparse::make_option(c("--beagle_input_dir"),
+      type = "character", default = NA,
+      help = "Directory containing pre-calculated Beagle VCF output files"
+    ),
+    optparse::make_option(c("--beaglejar"),
+      type = "character", default = NA,
+      help = "Path to Beagle 5 JAR file. Trigger internal phasing if provided."
+    ),
+    optparse::make_option(c("--beagleref_dir"),
+      type = "character", default = NA,
+      help = "Directory containing Beagle reference VCF files."
+    ),
+
+    # Tuning Parameters (Gamma & Kmin)
+    optparse::make_option(c("--platform_gamma"),
+      type = "double", default = 1
+    ),
+    optparse::make_option(c("--phasing_gamma"),
+      type = "double", default = 1
+    ),
+    optparse::make_option(c("--segmentation_gamma"),
+      type = "double", default = 10
+    ),
+    optparse::make_option(c("--segmentation_gamma_multisample"),
+      type = "double", default = 5
+    ),
+    optparse::make_option(c("--segmentation_kmin"),
+      type = "integer", default = 3
+    ),
+    optparse::make_option(c("--phasing_kmin"),
+      type = "integer", default = 1
+    ),
+
+    # Grid Search / ASCAT Params
+    optparse::make_option(c("--clonality_dist_metric"),
+      type = "integer", default = 0
+    ),
+    optparse::make_option(c("--ascat_dist_metric"),
+      type = "integer", default = 1
+    ),
+    optparse::make_option(c("--min_ploidy"),
+      type = "double", default = 1.6
+    ),
+    optparse::make_option(c("--max_ploidy"),
+      type = "double", default = 4.8
+    ),
+    optparse::make_option(c("--min_rho"),
+      type = "double", default = 0.1
+    ),
+    optparse::make_option(c("--max_rho"),
+      type = "double", default = 1.0
+    ),
+    optparse::make_option(c("--min_goodness"),
+      type = "double", default = 0.63
+    ),
+    optparse::make_option(c("--uninformative_baf_threshold"),
+      type = "double", default = 0.51
+    ),
+    optparse::make_option(c("--enhanced_grid_search"),
+      type = "logical", default = FALSE, action = "store_true"
+    ),
+    optparse::make_option(c("--n_neighbors_search"),
+      type = "numeric", default = NULL,
+      help = "Number of top grid points to search (integer). Set to Inf for exhaustive search. If NULL, only local minima are searched."
+    ),
+    optparse::make_option(c("--grid_psi_step"),
+      type = "double", default = 0.05,
+      help = "Grid spacing for psi (ploidy) dimension, default 0.05"
+    ),
+    optparse::make_option(c("--grid_rho_step"),
+      type = "double", default = 0.01,
+      help = "Grid spacing for rho (cellularity) dimension, default 0.01"
+    ),
+    optparse::make_option(c("--local_min_window_size"),
+      type = "integer", default = 7,
+      help = "Window size for local minimum detection (3, 5, 7, 9, etc.), larger = stricter. Default 7."
+    ),
+
+    # Quality Thresholds
+    optparse::make_option(c("--min_normal_depth"),
+      type = "integer", default = 10
+    ),
+    optparse::make_option(c("--min_base_qual"),
+      type = "integer", default = 20
+    ),
+    optparse::make_option(c("--min_map_qual"),
+      type = "integer", default = 35
+    ),
+    optparse::make_option(c("--max_allowed_state"),
+      type = "integer", default = 250
+    ),
+    optparse::make_option(c("--cn_upper_limit"),
+      type = "integer", default = 1000
+    ),
+    optparse::make_option(c("--calc_seg_baf_option"),
+      type = "integer", default = 3
+    ),
+    optparse::make_option(c("--prior_breakpoints_file"),
+      type = "character", default = NULL
+    ),
+    optparse::make_option(c("--externalhaplotypefile"),
+      type = "character", default = NA
+    ),
+    optparse::make_option(c("--write_battenberg_phasing"),
+      type = "logical", default = TRUE
+    ),
+
+    # Multisample & SNP6 Legacy/Special
+    optparse::make_option(c("--multisample_maxlag"),
+      type = "integer",
+      default = 90
+    ),
+    optparse::make_option(c("--multisample_relative_weight_balanced"),
+      type = "double", default = 0.25
+    ),
+    optparse::make_option(c("--snp6_reference_info_file"),
+      type = "character", default = NA
+    ),
+
+    # Logging & Debug
+    optparse::make_option(c("--verbose_logging"),
+      type = "logical",
+      default = FALSE, action = "store_true"
+    ),
+    optparse::make_option(c("--logging_path"),
+      type = "character", default = "."
+    )
+  )
+
+  # Parse arguments
+  parser <- optparse::OptionParser(option_list = option_list)
+  opt <- optparse::parse_args(parser)
+
+  log_setup(opt$logging_path, opt$verbose_logging)
+
+  # Remove the 'help' flag which optparse adds automatically
+  opt$help <- NULL
+
+  log_info(strrep("=", 120))
+  log_info("BATTENBERG CLI: EXECUTION PARAMETERS")
+  log_info(strrep("=", 120))
+
+  # Sort names so they are easy to find in the log
+  opt_names <- sort(names(opt))
+  for (name in opt_names) {
+    # Cleanly format each argument and its value
+    val <- opt[[name]]
+    log_info(sprintf("%-40s : %s", name, paste(val, collapse = ", ")))
+  }
+  log_info(strrep("=", 120))
+
+  # Split chrom_names if provided as comma-separated string
+  if (!is.null(opt$chrom_names)) {
+    opt$chrom_names <- unlist(strsplit(opt$chrom_names, ","))
+  }
+
+  # Remove CLI-only arguments before calling the main logic
+  opt$logging_path <- NULL
+
+  # Execute main function
+  do.call(battenberg, opt)
+}

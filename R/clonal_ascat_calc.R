@@ -1,0 +1,399 @@
+####################################################################################################
+#' This function calculates a P-value, for a test where the null hypothesis is that
+#' the sample was drawn from a Gaussian population with the specified mean "mu_pop".
+#' @noRd
+calc_Pvalue_t_twotailed <- function(
+  sample_size,
+  sample_mean,
+  sample_SD,
+  mu_pop,
+  max_dist
+) {
+  tvar <- (sample_mean - mu_pop) * sqrt(sample_size) / sample_SD
+
+  # Guard against df <= 0 (sample_size <= 1)
+  pval <- rep(0, length(tvar))
+  valid <- !is.na(tvar) & (sample_size > 1)
+
+  if (any(valid)) {
+    pval[valid] <- 2 * stats::pt(abs(tvar[valid]), df = sample_size[valid] - 1, lower.tail = FALSE)
+  }
+
+  # Apply maxdist override
+  pval[is.na(pval)] <- 0
+  pval[abs(sample_mean - mu_pop) < max_dist] <- 1
+  return(pval)
+}
+
+####################################################################################################
+#' Helper function that calculates a binomial probability
+#' @noRd
+calc_binomial_prob <- function(sample_proportion, sample_size, pop_proportion) {
+  p <- pmax(0, pmin(1, pop_proportion))
+  x <- round(sample_proportion * sample_size)
+  x <- pmax(0, pmin(sample_size, x))
+
+  return(stats::dbinom(x, size = sample_size, prob = p))
+}
+
+####################################################################################################
+#' This function calculates a log likelihood ratio where the two hypotheses are that
+#' the tumour genome segment in question is "clonal".
+#' The first hypothesis is the "best fit" model we can find.
+#' The second hypothesis is the "second best fit" model we can find.
+#' @noRd
+calc_ln_likelihood_ratio <- function(LogR, BAF_req, BAF_length, BAF_size, BAF_mean, read_depth, rho, psi, gamma_param, maxdist_BAF) {
+  pooled_BAF_size <- read_depth * BAF_size
+
+  # if we don't have a value for LogR, fill in 0
+  if (is.na(LogR)) {
+    LogR <- 0
+  }
+  nMajor <- (rho - 1 + BAF_req * psi * 2^(LogR / gamma_param)) / rho
+  nMinor <- (rho - 1 + (1 - BAF_req) * psi * 2^(LogR / gamma_param)) / rho
+
+
+  # DCW - increase nMajor and nMinor together, to avoid impossible combinations (with negative subclonal fractions)
+  if (nMinor < 0 || is.na(nMinor)) {
+    if (BAF_req == 1) {
+      # avoid calling infinite copy number
+      nMajor <- 1000
+    } else {
+      nMajor <- nMajor + BAF_req * (0.01 - nMinor) / (1 - BAF_req)
+      if (nMajor < 0) nMajor <- 1000
+    }
+    nMinor <- 0.01
+  }
+
+  if (!is.finite(nMajor)) {
+    nMajor <- 0.01
+  }
+
+  # Check if there is a viable solution
+  if (!is.na(BAF_req)) {
+    nearest_edge <- prioritizeCopyNumbers(
+      rho = rho,
+      psi = psi,
+      BAF_req = BAF_req,
+      nMajor = nMajor,
+      nMinor = nMinor,
+      full = FALSE
+    )
+    nMaj <- nearest_edge$nMaj
+    nMin <- nearest_edge$nMin
+    BAF_levels <- (1 - rho + rho * nMaj) / (2 - 2 * rho + rho * (nMaj + nMin))
+    index_vect <- which(is.finite(BAF_levels))
+    BAF_levels <- BAF_levels[index_vect]
+
+    if (length(BAF_levels) > 1) {
+      likelihood_vect <- sapply(BAF_levels, function(x) {
+        calc_binomial_prob(BAF_mean, pooled_BAF_size, x)
+      })
+      likelihood_vect <- sort(likelihood_vect, decreasing = TRUE)
+
+      if ((likelihood_vect[1] > 0) && (likelihood_vect[2] > 0)) {
+        ln_lratio <- log(likelihood_vect[1]) - log(likelihood_vect[2])
+      } else {
+        ln_lratio <- 0
+      }
+    } else {
+      ln_lratio <- 0
+    }
+  } else {
+    ln_lratio <- 0
+  }
+
+  return(ln_lratio)
+}
+
+
+#' Helper function to estimate rho from a given copy number state and it's BAF. The LogR is not used.
+#' @noRd
+estimate_rho <- function(LogR_value, BAF_req_value, nA_value, nB_value) {
+  rho_value <- (2 * BAF_req_value - 1) / (2 * BAF_req_value - BAF_req_value * (nA_value + nB_value) - 1 + nA_value)
+  return(rho_value)
+}
+
+####################################################################################################
+#' Helper function to calculate psi from a copy number fit, BAF, LogR, rho and a platform gamma
+#' @noRd
+estimate_psi <- function(LogR_value, BAF_req_value, nA_value, nB_value, rho_value, gamma_param) {
+  temp_value <- 2^(-LogR_value / gamma_param)
+  temp_value <- temp_value * (2 + (rho_value * (nA_value + nB_value - 2)))
+  # DCW this returns psi rather than psi_t, i.e. the average ploidy of normal and tumour cells
+  temp_value <- temp_value - (2 * (1 - rho_value))
+  psi_value <- temp_value / rho_value
+  return(psi_value)
+}
+
+
+#' Function that calculates rho and psi from a given reference segment, defined by ref_seg, with copy number state nA_ref and nB_ref
+#' @noRd
+get_psi_rho_from_ref_seg <- function(ref_seg, s, nA_ref, nB_ref, gamma_param = 1) {
+  BAF_req <- s[ref_seg, "b"]
+  LogR <- s[ref_seg, "r"]
+
+  rho <- estimate_rho(LogR, BAF_req, nA_ref, nB_ref)
+  psi <- estimate_psi(LogR, BAF_req, nA_ref, nB_ref, rho, gamma_param)
+
+  # ploidy is recalculated based on results, to avoid bias (due to differences in normalization of LogR)
+  nA <- (rho - 1 - (s[, "b"] - 1) * 2^(s[, "r"] / gamma_param) * ((1 - rho) * 2 + rho * psi)) / rho
+  nB <- (rho - 1 + s[, "b"] * 2^(s[, "r"] / gamma_param) * ((1 - rho) * 2 + rho * psi)) / rho
+  ploidy <- sum((nA + nB) * s[, "length"]) / sum(s[, "length"])
+
+  # TODO DEBUG
+  if (rho > 0) {
+    ref_segment_info <- list(psi = psi, rho = rho, ploidy = ploidy)
+  } else {
+    ref_segment_info <- list(psi = NA, rho = NA, ploidy = NA)
+  }
+
+  return(ref_segment_info)
+}
+
+
+####################################################################################################
+#' This function calculates a t variate.
+#' @noRd
+calc_standardised_error <- function(
+  LogR, BAF_req, BAF_length, BAF_size, BAF_mean, BAF_sd,
+  rho, psi, gamma_param, maxdist_BAF
+) {
+  # if we don't have a value for LogR, fill in 0
+  if (is.na(LogR)) {
+    LogR <- 0
+  }
+
+  # Pre-calculate shared terms
+  factor <- 2^(LogR / gamma_param)
+  term_psi <- ((1 - rho) * 2 + rho * psi)
+
+  nMajor <- (rho - 1 + BAF_req * factor * term_psi) / rho
+  nMinor <- (rho - 1 + (1 - BAF_req) * factor * term_psi) / rho
+
+  # to make sure we're always in a positive square:
+  nMajor <- if (is.na(nMajor) || nMajor < 0) 0.01 else nMajor
+  nMinor <- if (is.na(nMinor) || nMinor < 0) 0.01 else nMinor
+
+  # note that these are sorted in the order of ascending BAF:
+  nMaj_opts <- c(floor(nMajor), ceiling(nMajor), floor(nMajor), ceiling(nMajor))
+  nMin_opts <- c(ceiling(nMinor), ceiling(nMinor), floor(nMinor), floor(nMinor))
+  x <- floor(nMinor)
+  y <- floor(nMajor)
+  ntot <- nMajor + nMinor
+
+  # Calculate BAF levels and handle division by zero
+  denom <- (2 - 2 * rho + rho * (nMaj_opts + nMin_opts))
+  index_vect <- which(denom != 0)
+
+  nMaj_opts <- nMaj_opts[index_vect]
+  nMin_opts <- nMin_opts[index_vect]
+  BAF_levels <- (1 - rho + rho * nMaj_opts) / denom[index_vect]
+
+  whichclosestlevel <- which.min(abs(BAF_levels - BAF_req))
+
+  # if 0.5 and there are multiple options, finetune
+  if (length(BAF_levels) >= 3) {
+    if (abs(BAF_levels[whichclosestlevel] - 0.5) < 1e-10 &&
+      abs(BAF_levels[2] - 0.5) < 1e-10 &&
+      abs(BAF_levels[3] - 0.5) < 1e-10) {
+      whichclosestlevel <- if (ntot > x + y + 1) 2 else 3
+    }
+  }
+
+  mu <- BAF_levels[whichclosestlevel]
+  included_segment <- 0
+  tvar <- 0
+
+  if (BAF_size > 0) {
+    if (BAF_sd != 0 && length(mu) > 0) {
+      # Use the provided calc_Pvalue_t_twotailed logic if needed,
+      # but original used studentise
+      tvar <- studentise(BAF_size, BAF_mean, BAF_sd, mu)
+      included_segment <- 1
+    }
+  }
+
+  return(list(included_segment = included_segment, tvar = tvar))
+}
+
+#' Helper function to calculate a studentised t-variate
+#' @noRd
+studentise <- function(sample_size, sample_mean, sample_sd, mu) {
+  return((sample_mean - mu) * sqrt(sample_size) / sample_sd)
+}
+
+
+#' Recalculate psi_t based on rho and the available data
+#'
+#' @param psi A psi estimate
+#' @param rho A rho estimate
+#' @param platform_gamma The platform specific LogR scaling parameter
+#' @param lrrsegmented Segmented LogR, a vector with just the values
+#' @param segBAF_table Segmented BAF, the full table
+#' @param siglevel_BAF Significance level when testing wether a segment is clonal or subclonal given a rho/psi combination, parameter is used in \code{is_segment_clonal}
+#' @param maxdist_BAF Max distance BAF is allowed to be away from the copy number solution before we don't trust the value and overrule a p-value, parameter required when determining the clonal status of a segment in \code{is_segment_clonal}
+#' @param include_subcl_segments Boolean flag, supply TRUE if subclonal segments should be included when calculating psi_t, supply FALSE if only clonal segments should be included (default: TRUE)
+#' @noRd
+recalc_psi_t <- function(psi, rho, gamma_param, lrrsegmented, segBAF_table, siglevel_BAF, maxdist_BAF, include_subcl_segments = TRUE) {
+  # Create segments of constant BAF/LogR
+  # Align lrrsegmented with segBAF_table using names if available
+  lrr_aligned <- if (!is.null(names(lrrsegmented)) && !is.null(rownames(segBAF_table))) {
+    lrrsegmented[rownames(segBAF_table)]
+  } else {
+    lrrsegmented
+  }
+
+  s <- get_segment_info(lrr_aligned, segBAF_table)
+  # Make sure no segment of length 1 remains
+  s <- s[!is.na(s[, 3]) & s[, 3] > 1, , drop = FALSE]
+
+  if (nrow(s) == 0) {
+    return(NA)
+  }
+
+  # Check which segments are clonal with this rho/psi configuration
+  segment_info <- is_segment_clonal(
+    LogR = s[, "r"],
+    BAF_req = s[, "b"],
+    BAF_length = s[, "length"],
+    BAF_size = s[, "size"],
+    BAF_mean = s[, "mean"],
+    BAF_sd = s[, "sd"],
+    read_depth = NA, # Unused legacy param
+    rho = rho,
+    psi = psi,
+    gamma_param = gamma_param,
+    siglevel_BAF = siglevel_BAF,
+    maxdist_BAF = maxdist_BAF,
+    siglevel_LogR = NA, # Unused legacy param
+    maxdist_LogR = NA # Unused legacy param
+  )
+
+  # Include this segment if we want to include all segments,
+  # or if we don't want subclonal segments include it only if its clonal
+  keep_mask <- if (include_subcl_segments) rep(TRUE, nrow(s)) else segment_info$is_clonal
+
+  if (!any(keep_mask)) {
+    return(NA)
+  }
+
+  nMaj <- segment_info$nMaj[keep_mask]
+  nMin <- segment_info$nMin[keep_mask]
+  s_r <- s[keep_mask, "r"]
+  s_len <- s[keep_mask, "length"]
+
+  # Calculate psi_t for each segment and then the weighted average
+  psi_t_vec <- calc_psi_t(nMaj + nMin, s_r, rho, gamma_param)
+  psi_t <- collapse::fsum(psi_t_vec * s_len) / collapse::fsum(s_len)
+
+  return(psi_t)
+}
+
+#' Calculate psi based on a reference segment and its associated logr
+#'
+#' @param total_cn Integer representing the total clonal copynumber (i.e. nMajor+nMinor)
+#' @param r The LogR of the segment with the total_cn copy number
+#' @param rho A cellularity estimate
+#' @param gamma_param Platform gamma parameter
+#' @author sd11
+#' @export
+calc_psi_t <- function(total_cn, r, rho, gamma_param) {
+  psi <- (rho * (total_cn) + 2 - 2 * rho) / (2^(r / gamma_param))
+  psi_t <- (psi - 2 * (1 - rho)) / rho
+  return(psi_t)
+}
+
+
+# Optimized Batch version of the t-test logic
+calc_batch_standardised_errors <- function(s, rho, psi, gamma_param) {
+  # s contains columns: r (LogR), b (BAF_req), length, size, mean, sd
+
+  scale <- psi * 2^(s[, "r"] / gamma_param)
+  nMajor_raw <- (rho - 1 + s[, "b"] * scale) / rho
+  nMinor_raw <- (rho - 1 + (1 - s[, "b"]) * scale) / rho
+
+  # Vectorized floor at 0.01
+  nMajor <- pmax(0.01, nMajor_raw)
+  nMinor <- pmax(0.01, nMinor_raw)
+
+  # Instead of a 4-item list per segment, we do 4 separate vector calculations
+  # This is where the massive speedup happens
+  nMaj_opts <- list(floor(nMajor), ceiling(nMajor), floor(nMajor), ceiling(nMajor))
+  nMin_opts <- list(ceiling(nMinor), ceiling(nMinor), floor(nMinor), floor(nMinor))
+
+  # Calculate BAF levels for all 4 possibilities across all segments simultaneously
+  BAF_levels <- lapply(1:4, function(k) {
+    denom <- (2 - 2 * rho + rho * (nMaj_opts[[k]] + nMin_opts[[k]]))
+    (1 - rho + rho * nMaj_opts[[k]]) / denom
+  })
+
+  # Vectorized "which.min(abs(BAF_levels - BAF_req))"
+  # We find the distance for all 4 options
+  diffs <- cbind(
+    abs(BAF_levels[[1]] - s[, "b"]),
+    abs(BAF_levels[[2]] - s[, "b"]),
+    abs(BAF_levels[[3]] - s[, "b"]),
+    abs(BAF_levels[[4]] - s[, "b"])
+  )
+
+  # Pick the best index for every segment at once
+  best_idx <- max.col(-diffs) # max of negative is min
+
+  # Map the best mu values
+  mu <- mapply(function(row, col) BAF_levels[[col]][row], seq_len(nrow(s)), best_idx)
+
+  # Final t-variable calculation
+  is_valid <- s[, "size"] > 0 & s[, "sd"] != 0
+  tvar <- ifelse(is_valid, (s[, "mean"] - mu) * sqrt(s[, "size"]) / s[, "sd"], 0)
+
+  return(tvar)
+}
+
+# Optimized batch version of log likelihood ratio
+#' @export
+calc_batch_ln_likelihood_ratios <- function(s, read_depth, rho, psi, gamma_param) {
+  # s contains columns: r (LogR), b (BAF_req), length, size, mean, sd
+  pooled_BAF_size <- read_depth * s[, "size"]
+  LogR <- s[, "r"]
+  LogR[is.na(LogR)] <- 0
+
+  # Pre-calculate shared terms
+  factor <- 2^(LogR / gamma_param)
+  term_psi <- ((1 - rho) * 2 + rho * psi)
+
+  nMajor_raw <- (rho - 1 + s[, "b"] * factor * term_psi) / rho
+  nMinor_raw <- (rho - 1 + (1 - s[, "b"]) * factor * term_psi) / rho
+
+  nMajor <- pmax(0.01, nMajor_raw)
+  nMinor <- pmax(0.01, nMinor_raw)
+
+  # Get nearest edges (best option only for likelihood)
+  nearest_edges <- prioritizeCopyNumbers(
+    rho = rho, psi = psi, BAF_req = s[, "b"],
+    nMajor = nMajor, nMinor = nMinor, full = FALSE
+  )
+
+  # corners 1 and 2
+  nMaj_opts <- nearest_edges$nMaj
+  nMin_opts <- nearest_edges$nMin
+
+  # Calculate BAF levels for both corners
+  calc_lev <- function(nM, nm) {
+    den <- (2 - 2 * rho + rho * (nM + nm))
+    ifelse(den != 0, (1 - rho + rho * nM) / den, 0.5)
+  }
+
+  lev1 <- calc_lev(nMaj_opts[, 1], nMin_opts[, 1])
+  lev2 <- calc_lev(nMaj_opts[, 2], nMin_opts[, 2])
+
+  # Calculate likelihoods for both
+  L1 <- calc_binomial_prob(s[, "mean"], pooled_BAF_size, lev1)
+  L2 <- calc_binomial_prob(s[, "mean"], pooled_BAF_size, lev2)
+
+  L_best <- pmax(L1, L2)
+  L_second <- pmin(L1, L2)
+
+  ln_lratio <- ifelse(L_best > 0 & L_second > 0, log(L_best) - log(L_second), 0)
+  return(ln_lratio)
+}

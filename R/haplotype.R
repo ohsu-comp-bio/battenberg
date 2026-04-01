@@ -1,5 +1,5 @@
 #' Morphs phased SNPs from SNP6 input into haplotype blocks
-#' 
+#'
 #' This function matches allele frequencies and halplotype info, reverses frequencies by haplotype, combines the output and saves it to disk.
 #' @param chrom The chromosome number for which this function should run.
 #' @param alleleFreqFile File containing allele frequency information.
@@ -9,34 +9,32 @@
 #' @param chr_names Vector of chromosome names
 #' @author dw9
 #' @export
-GetChromosomeBAFs_SNP6 = function(chrom, alleleFreqFile, haplotypeFile, samplename, outputfile, chr_names) {
+GetChromosomeBAFs_SNP6 <- function(chrom, alleleFreqFile, haplotypeFile, samplename, outputfile, chr_names) {
   # Read in the allele frequencies and variant info
-  alleleFreqData = read.csv(alleleFreqFile, header=T)
-  variant_data = read.table(haplotypeFile, header=F)
-  
-  # TODO: Check columns input
-  
+  alleleFreqData <- data.table::fread(alleleFreqFile, header = TRUE, data.table = FALSE)
+  variant_data <- data.table::fread(haplotypeFile, header = FALSE, data.table = FALSE)
+
   # Match the two
-  alleleFreqData = alleleFreqData[alleleFreqData[,1] %in% variant_data[,3],]
-  select = match(alleleFreqData[,1], variant_data[,3])
-  variant_data = variant_data[select,]
-  
-  chr_name = chrom
-  print(chr_name)
+  alleleFreqData <- alleleFreqData[alleleFreqData[, 1] %in% variant_data[, 3], ]
+  select <- match(alleleFreqData[, 1], variant_data[, 3])
+  variant_data <- variant_data[select, ]
+
+  chr_name <- chrom
+  log_info("Processing: {chr_name}")
 
   # Switch the haplotypes where required
-  alleleFreqs = alleleFreqData$allele.frequency
-  reversedHaplotypes = variant_data[,6]==1
-  alleleFreqs[reversedHaplotypes] = 1.0-alleleFreqs[reversedHaplotypes]
-  
-  print(paste(nrow(variant_data),length(alleleFreqs),sep=","))
+  alleleFreqs <- alleleFreqData$allele.frequency
+  reversedHaplotypes <- variant_data[, 6] == 1
+  alleleFreqs[reversedHaplotypes] <- 1.0 - alleleFreqs[reversedHaplotypes]
+
+  log_info("{nrow(variant_data)},{length(alleleFreqs)}")
   # Combine the allele frequencies and variant info and save output
-  knownMutBAFs = cbind(chr_name,variant_data[,3],alleleFreqs)
-  write.table(knownMutBAFs, outputfile, sep="\t", row.names=F, col.names=c("Chromosome", "Position", samplename), quote=F)	
+  knownMutBAFs <- cbind(chr_name, variant_data[, 3], alleleFreqs)
+  data.table::fwrite(knownMutBAFs, outputfile, sep = "\t", col.names = c("Chromosome", "Position", samplename), quote = FALSE)
 }
 
 #' Morphs phased SNPs from WGS input into haplotype blocks
-#' 
+#'
 #' @param chrom The chromosome number for which this function is called.
 #' @param SNP_file File containing allele counts for each SNP location.
 #' @param haplotypeFile File containing impute phasing output.
@@ -45,107 +43,339 @@ GetChromosomeBAFs_SNP6 = function(chrom, alleleFreqFile, haplotypeFile, samplena
 #' @param chr_names Names of all allowed chromosomes as a Vector.
 #' @param minCounts An integer describing the minimum number of reads covering this position to be included in the output.
 #' @author dw9
+#' @importFrom data.table :=
 #' @export
-GetChromosomeBAFs = function(chrom, SNP_file, haplotypeFile, samplename, outfile, chr_names, minCounts=1) {
-  # Read in the SNP and haplotype info
-  snp_data = read.table(SNP_file, comment.char="", sep="\t", header=T, stringsAsFactors=F)
-  variant_data = read.table(haplotypeFile, header=F)
-  
-  # TODO: Check columns input
-  
-  print(snp_data[1:3,])
-  print(chr_names)
-  print(chrom)
-  
-  # Just select heterozygous SNPs
-  het_variant_data = variant_data[variant_data[,6] != variant_data[,7],]
-  
-  chr_name = chrom
-  print(chr_name)
-  
-  # Match allele counts and phasing info
-  indices = match(het_variant_data[,3],snp_data[,2])
-  het_variant_data = het_variant_data[!is.na(indices),]
-  snp_indices = indices[!is.na(indices)]
-  filtered_snp_data = snp_data[snp_indices,]
-  
-  # No matches found, save empty file and quit
-  if(nrow(het_variant_data)==0 | is.null(het_variant_data)) {
-    write.table(array(NA,c(0,3)),outfile,sep="\t",col.names=c("Chromosome","Position",samplename),quote=F,row.names=F)		
-    return()
+GetChromosomeBAFs <- function(
+  chrom,
+  SNP_file,
+  haplotypeFile,
+  samplename,
+  outfile,
+  chr_names,
+  minCounts = 1L
+) {
+  # Input validation
+  if (!chrom %in% chr_names) {
+    log_failure("chrom must be one of the allowed chromosomes specified in chr_names")
   }
-  print(filtered_snp_data[1:3,])
-  
-  # Decode 1,2,3,4 to A,C,G,T (encoding used in the variant_data input files)
-  # TODO: place this in utils script? Isn't this also performed in GenerateImputeInputFromAlleleFrequencies.R?
-  nucleotides=c("A","C","G","T")
-  ref_indices = match(het_variant_data[cbind(1:nrow(het_variant_data),4+het_variant_data[,6])],nucleotides)
-  alt_indices = match(het_variant_data[cbind(1:nrow(het_variant_data),4+het_variant_data[,7])],nucleotides)
-  
-  # Obtain counts for both alleles and the total
-  ref.count = as.numeric(filtered_snp_data[cbind(1:nrow(filtered_snp_data),alt_indices+2)])
-  alt.count = as.numeric(filtered_snp_data[cbind(1:nrow(filtered_snp_data),ref_indices+2)])
-  denom = ref.count+alt.count
+  if (!file.exists(SNP_file)) log_failure("SNP_file not found: {SNP_file}")
+  if (!file.exists(haplotypeFile)) log_failure("haplotypeFile not found: {haplotypeFile}")
+  minCounts <- as.integer(minCounts)
 
-  # Filter out those SNPs that have less than minCounts reads
-  min_indices = denom>=minCounts
-  filtered_snp_data = filtered_snp_data[min_indices,]
-  denom = denom[min_indices]
-  alt.count = alt.count[min_indices]
-  
-  # No matches found, save empty file and quit
-  if(nrow(filtered_snp_data)==0 | is.null(filtered_snp_data)) {
-    write.table(array(NA,c(0,3)),outfile,sep="\t",col.names=c("Chromosome","Position",samplename),quote=F,row.names=F)  	
-    return()
+  log_info("Reading SNP file: {SNP_file}")
+  log_info("Reading haplotype file: {haplotypeFile}")
+
+  snp_dt <- data.table::fread(
+    SNP_file,
+    sep = "\t",
+    header = FALSE,
+    colClasses = list(character = 1)
+  )
+
+  phase_dt <- data.table::fread(
+    haplotypeFile,
+    header = FALSE
+  )
+  snp_pos_col_idx <- 2
+
+  # We assume the file HAS NO HEADER as per user feedback.
+  v2_is_num <- suppressWarnings(!is.na(as.numeric(snp_dt$V2[1])))
+  v3_is_num <- suppressWarnings(!is.na(as.numeric(snp_dt$V3[1])))
+
+  if (!v2_is_num && v3_is_num) {
+    log_info("Detected ID/RSID/POS format. Using Column 3 as Position.")
+    snp_pos_col_idx <- 3
   }
-  
-  # Save all to disk
-  hetMutBAFs = cbind(chr_name,filtered_snp_data[,2],alt.count/denom)
-  write.table(hetMutBAFs,outfile,sep="\t",row.names=F,col.names=c("Chromosome","Position",samplename),quote=F)
-}
 
-#' Plot haplotyped SNPs
-#' 
-#' This function takes haplotyped SNPs and plots them to a png file.
-#' @param haplotyped.baf.file File containing the haplotyped SNP info.
-#' @param imageFileName Filename as which the png will be saved.
-#' @param samplename Name of the sample to be used in image title.
-#' @param chrom The chromosome that is plotted.
-#' @param chr_names A list of allowed chromosome names.
-#' @author dw9
-#' @export
-plot.haplotype.data = function(haplotyped.baf.file, imageFileName, samplename, chrom, chr_names) {
-  chr_name = chrom
-  mut_data = read.table(haplotyped.baf.file,sep="\t",header=T)
-  
-  if (nrow(mut_data) > 0) {
-    x_min = min(mut_data$Position,na.rm=T)
-    x_max = max(mut_data$Position,na.rm=T)
+  # Convert the identified Position column to V2 (internal standard)
+  if (snp_pos_col_idx == 3) {
+    data.table::set(snp_dt, j = "V2", value = as.integer(as.numeric(snp_dt[[3]])))
   } else {
-    x_min = 1
-    x_max = 2
+    # Standard V2 is Pos
+    suppressWarnings(
+      data.table::set(snp_dt, j = "V2", value = as.integer(as.numeric(snp_dt[[2]])))
+    )
   }
 
-  png(filename = imageFileName, width = 10000, height = 2500, res = 500, type = "cairo")
-  create.haplotype.plot(chrom.position=mut_data$Position, 
-                        points.blue=mut_data[,3], 
-                        points.red=1-mut_data[,3], 
-                        x.min=x_min, 
-                        x.max=x_max, 
-                        title=paste(samplename,", chromosome",mut_data[1,1], sep=" "), 
-                        xlab="pos", 
-                        ylab="BAF")
-  dev.off()
+  # Ensure count columns (V3-V7) are integer if they look numeric
+  # This prevents "string" columns from breaking downstream math
+  for (col in paste0("V", 3:7)) {
+    if (col %in% names(snp_dt)) {
+      # Don't force if it's the Position column we just set (it's already int)
+      if (col == "V3" && snp_pos_col_idx == 3) next
+
+      val <- snp_dt[[col]]
+      if (is.numeric(val) || (is.character(val) && all(grepl("^[0-9]+$", na.omit(val))))) {
+        suppressWarnings(
+          data.table::set(snp_dt, j = col, value = as.integer(as.numeric(val)))
+        )
+      }
+    }
+  }
+
+  # Phase: V3 (Pos) -> int
+  if ("V3" %in% names(phase_dt)) {
+    suppressWarnings(
+      data.table::set(phase_dt, j = "V3", value = as.integer(as.numeric(phase_dt[["V3"]])))
+    )
+  }
+
+  # Check for empty data after filtering/type conversion
+  if (nrow(snp_dt) == 0) {
+    log_warning("SNP file is empty after filtering/type conversion: {SNP_file}")
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
+  }
+  if (nrow(phase_dt) == 0) {
+    log_info("Haplotype file is empty (likely 0 phased SNPs): {haplotypeFile}")
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
+  }
+
+  # Ensure column names exist before extraction
+  required_cols <- c("V3", "V6", "V7", "V4", "V5")
+  missing <- setdiff(required_cols, names(phase_dt))
+  if (length(missing) > 0) {
+    log_warning("Haplotype file {haplotypeFile} is missing required columns: {paste(missing, collapse=', ')}")
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
+  }
+
+  # Use [[ indexing to explicitly reference columns by name (strings)
+  het_phase <- phase_dt[phase_dt[["V6"]] != phase_dt[["V7"]]]
+
+  if (nrow(het_phase) == 0) {
+    log_info("No heterozygous phased SNPs found on chromosome {chrom}")
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
+  }
+
+  # Match positions using setkeyv (the string-based version of setkey)
+  data.table::setkeyv(snp_dt, "V2")
+
+  # Use list() instead of .() to avoid global function warnings
+  matched <- snp_dt[list(het_phase[["V3"]]), nomatch = NULL]
+
+  if (nrow(matched) == 0) {
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
+  }
+
+  # Ensure count columns are numeric before matrix conversion
+  for (col in names(matched)[3:6]) {
+    matched[[col]] <- as.numeric(as.character(matched[[col]]))
+  }
+
+  if (nrow(matched) == 0) {
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
+  }
+
+  # Filter het_phase based on matched positions
+  het_phase <- het_phase[het_phase[["V3"]] %in% matched[["V2"]]]
+
+  # Map nucleotide characters to column offsets (A=3, C=4, G=5, T=6)
+  nuc_to_col <- c(A = 3L, C = 4L, G = 5L, "T" = 6L)
+
+  # Extract phased alleles as characters
+  ref_allele <- toupper(ifelse(het_phase[["V6"]] == 0, het_phase[["V4"]], het_phase[["V5"]]))
+  alt_allele <- toupper(ifelse(het_phase[["V6"]] == 1, het_phase[["V4"]], het_phase[["V5"]]))
+
+  # Use matrix indexing to get counts safely without dynamic column warnings
+  # We select only the count columns (3 through 6)
+  count_matrix <- as.matrix(matched[, 3:6, with = FALSE])
+
+  # ref_allele and alt_allele map to 1:4 relative to the count_matrix
+  ref_idx <- nuc_to_col[ref_allele] - 2L
+  alt_idx <- nuc_to_col[alt_allele] - 2L
+
+  row_indices <- seq_len(nrow(count_matrix))
+  ref_count <- count_matrix[cbind(row_indices, ref_idx)]
+  alt_count <- count_matrix[cbind(row_indices, alt_idx)]
+
+  total_depth <- ref_count + alt_count
+  valid <- total_depth >= minCounts
+
+  if (!any(valid)) {
+    write_empty_output(chrom, samplename, outfile)
+    return(invisible(NULL))
+  }
+
+  # Construct output data.table
+  output_dt <- data.table::data.table(
+    Chromosome = chrom,
+    Position   = matched[["V2"]][valid],
+    BAF        = alt_count[valid] / total_depth[valid]
+  )
+  data.table::setnames(output_dt, "BAF", samplename)
+  data.table::fwrite(output_dt, file = outfile, sep = "\t", quote = FALSE)
 }
 
-#' Combines all separate BAF files per chromosome into a single file
+# Helper function to avoid code duplication
+write_empty_output <- function(chrom, samplename, outfile) {
+  empty_dt <- data.table::data.table(
+    Chromosome = character(),
+    Position   = integer(),
+    dummy      = numeric()
+  )
+  data.table::setnames(empty_dt, "dummy", samplename)
+  data.table::fwrite(empty_dt, file = outfile, sep = "\t", quote = FALSE)
+}
+
+#' Plot haplotyped BAF values for a single chromosome
 #'
-#' @param inputfile.prefix Prefix of the input files until the chromosome number. The chromosome number will be added internally
-#' @param inputfile.postfix Postfix of the input files from the chromosome number
-#' @param outputfile Full path to where the output will be written
-#' @param chr_names A list of allowed chromosome names.
-#' @author dw9
+#' Reads a tab-separated file produced by GetChromosomeBAFs() (columns: Chromosome, Position, <samplename>)
+#' and creates a high-resolution PNG showing the B Allele Frequency (BAF) mirrored around 0.5
+#' (standard haplotype/ASCAT-style plot).
+#'
+#' @param haplotyped_baf_file Path to the input TSV file with haplotyped BAF data.
+#' @param image_file_name Path to the output PNG file.
+#' @param samplename Name of the sample (used in plot title).
+#' @param chrom Chromosome identifier (used only for validation and title if data is empty).
+#'
+#' @return Invisibly returns NULL; side effect is writing the PNG file.
+#' @author Original: dw9; Modernized version
 #' @export
-combine.baf.files = function(inputfile.prefix, inputfile.postfix, outputfile, chr_names) {
-  concatenateBAFfiles(inputfile.prefix, inputfile.postfix, outputfile, chr_names)
+plot_haplotype_data <- function(haplotyped_baf_file,
+                                image_file_name,
+                                samplename,
+                                chrom) {
+  # Input validation
+  if (!file.exists(haplotyped_baf_file)) {
+    log_failure("Input file not found: ", haplotyped_baf_file)
+  }
+
+  # Read data (expecting columns: Chromosome, Position, <samplename>)
+  baf_dt <- data.table::fread(haplotyped_baf_file, header = TRUE)
+
+  # Determine x-axis limits
+  if (nrow(baf_dt) == 0) {
+    log_info("No data in '{haplotyped_baf_file}' - creating empty plot")
+    x_min <- 1
+    x_max <- 2
+    positions <- numeric()
+    baf_values <- numeric()
+    plot_chrom <- chrom
+  } else {
+    x_min <- min(baf_dt$Position, na.rm = TRUE)
+    x_max <- max(baf_dt$Position, na.rm = TRUE)
+    positions <- baf_dt$Position
+    # third column is the sample BAF
+    baf_values <- baf_dt[[3]]
+    plot_chrom <- baf_dt$Chromosome[1]
+  }
+
+  # Open PNG device with reasonable size and resolution
+  grDevices::png(
+    filename = image_file_name,
+    width = 1200, height = 600, res = 150, type = "cairo"
+  )
+
+  # Assuming create_haplotype_plot is a custom function available in your package/environment
+  create_haplotype_plot(
+    chrom_position = positions,
+    points.blue    = baf_values,
+    points.red     = 1 - baf_values,
+    x_min          = x_min,
+    x_max          = x_max,
+    title          = paste(samplename, ", chromosome", plot_chrom),
+    xlab           = "Position",
+    ylab           = "BAF"
+  )
+
+  grDevices::dev.off()
+  invisible(NULL)
+}
+#' Combine per-chromosome BAF files into a single table
+#'
+#' @param prefix   File path prefix before chromosome name
+#' @param suffix   File path suffix after chromosome name
+#' @param chroms   Character vector of chromosome names
+#' @param output   Path to output TSV file
+#'
+#' @return Invisibly returns the combined data.frame
+#' @export
+concatenate_baf_files <- function(
+  input_start,
+  input_end,
+  output_file,
+  chr_names
+) {
+  files <- paste0(input_start, chr_names, input_end)
+
+  log_info("Starting concatenation for {length(chr_names)} expected BAF files {files}")
+
+
+  # Filter for existing and non-empty files
+  valid_files <- files[
+    fs::file_exists(files) &
+      fs::file_size(files) > 0
+  ]
+
+  exists_mask <- fs::file_exists(files)
+  size_mask <- fs::file_size(files) > 0
+  missing_chrs <- chr_names[!exists_mask]
+  if (base::length(missing_chrs) > 0) {
+    log_info("Chromosomes missing files: {base::paste(missing_chrs, collapse = ', ')}")
+  }
+
+  empty_chrs <- chr_names[exists_mask & !size_mask]
+  if (base::length(empty_chrs) > 0) {
+    log_info("DATA ISSUE: Chromosomes with 0-byte files: {base::paste(empty_chrs, collapse = ', ')}")
+  }
+
+  valid_files <- files[exists_mask & size_mask]
+
+  if (base::length(valid_files) == 0) {
+    log_info("CRITICAL: Zero valid BAF files found across all chromosomes.")
+  }
+
+  log_info("Proceeding to combine {base::length(valid_files)} valid files")
+
+  # Force first column to character
+  # Use column index 1 to avoid needing names(vroom(...)) twice
+  first_file_cols <- names(vroom::vroom(
+    valid_files[1],
+    n_max = 0,
+    progress = FALSE,
+    show_col_types = FALSE
+  ))
+  col_spec <- vroom::cols(
+    .default = vroom::col_guess(),
+    !!!stats::setNames(list(vroom::col_character()), first_file_cols[1])
+  )
+
+  log_info("Reading data using column spec based on {fs::path_file(valid_files[1])}")
+
+  combined <- vroom::vroom(
+    valid_files,
+    id = "file_path",
+    delim = "\t",
+    col_types = col_spec,
+    progress = FALSE,
+    show_col_types = FALSE,
+    .name_repair = "minimal"
+  ) |>
+    dplyr::select(-dplyr::any_of("file_path"))
+
+  total_rows <- base::nrow(combined)
+  if (total_rows == 0) {
+    log_failure("DATA ISSUE: Files were read but the resulting table is empty.")
+  }
+
+  log_info("Total combined rows: {base::format(total_rows, big.mark = ',')}")
+
+  # Ensure output directory exists
+  fs::dir_create(fs::path_dir(output_file), recurse = TRUE)
+
+  # Write output
+  vroom::vroom_write(
+    combined,
+    file = output_file,
+    delim = "\t",
+    na = "NA",
+    quote = "none"
+  )
+
+  log_info("BAF concatenation complete. Final file size: {fs::file_size(output_file)}")
 }

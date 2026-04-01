@@ -2,7 +2,7 @@
 % Please edit documentation in R/haplotype_external.R
 \name{get_multisample_phasing}
 \alias{get_multisample_phasing}
-\title{Generates phased haplotypes from multisample Battenberg runs}
+\title{Compute multisample phasing for common hetSNPs}
 \usage{
 get_multisample_phasing(
   chrom,
@@ -24,7 +24,7 @@ get_multisample_phasing(
 \item{outprefix}{Prefix of the ouput multisample phasing files}
 }
 \description{
-Generates phased haplotypes from multisample Battenberg runs
+Compute multisample phasing for common hetSNPs
 }
 \author{
 jdemeul

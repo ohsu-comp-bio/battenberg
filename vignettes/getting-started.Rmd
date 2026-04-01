@@ -34,12 +34,15 @@ Battenberg requires several dependencies. Install them first:
 
 ```{r eval = FALSE}
 # Install Bioconductor packages
-if (!require("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
+if (!require("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
 
-BiocManager::install(c("devtools", "splines", "readr", "doParallel", 
-                       "ggplot2", "RColorBrewer", "gridExtra", "gtools", 
-                       "parallel", "VariantAnnotation", "GenomicRanges"))
+BiocManager::install(c(
+  "devtools", "splines", "readr", "doParallel",
+  "ggplot2", "RColorBrewer", "gridExtra", "gtools",
+  "parallel", "VariantAnnotation", "GenomicRanges"
+))
 
 # Install modified copynumber package
 devtools::install_github("igordot/copynumber")
@@ -52,7 +55,7 @@ devtools::install_github("VanLoo-lab/ascat/ASCAT")
 
 ```{r eval = FALSE}
 # Install from GitHub (pre_3.0 branch)
-devtools::install_github("Wedge-lab/battenberg", ref="pre_3.0")
+devtools::install_github("Wedge-lab/battenberg", ref = "pre_3.0")
 ```
 
 ## Reference Data Requirements
@@ -118,7 +121,7 @@ result <- battenberg(
   max_ploidy = 4.8,
   min_rho = 0.1,
   min_goodness = 0.63,
-  uninformative_BAF_threshold = 0.51,
+  uninformative_baf_threshold = 0.51,
   min_normal_depth = 10,
   min_base_qual = 20,
   min_map_qual = 35
@@ -164,17 +167,17 @@ Battenberg produces several key output files:
 ### Load Copy Number Data
 ```{r eval = FALSE}
 # Read the main results file
-cn_data <- read.delim("sample_tumor_copynumber.txt")
+cn_data <- utils::read.delim("sample_tumor_copynumber.txt")
 
 # Examine the structure
-head(cn_data)
+utils::head(cn_data)
 str(cn_data)
 ```
 
 ### Load Purity/Ploidy Estimates
 ```{r eval = FALSE}
 # Read purity and ploidy estimates
-rho_psi <- read.delim("sample_tumor_rho_and_psi.txt")
+rho_psi <- utils::read.delim("sample_tumor_rho_and_psi.txt")
 
 # Extract purity (rho) - use FRAC_genome value from second row
 tumor_purity <- rho_psi$rho[2]

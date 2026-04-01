@@ -1,9 +1,9 @@
 Package: Battenberg
 Maintainer: Stefan Dentro <sd11@sanger.ac.uk>
-License: GPL-3
+License: AGPL-3
 Type: Package
 Title: Battenberg subclonal copy number caller
-Version: 3.0.0
+Version: 3.0.2
 Encoding: UTF-8
 Authors@R: c(person("David", "Wedge", role=c("aut"), email="dw9@sanger.ac.uk"),
     person("Peter", "Van Loo", role=c("aut")),
@@ -17,15 +17,16 @@ Authors@R: c(person("David", "Wedge", role=c("aut"), email="dw9@sanger.ac.uk"),
     person("Mohammed Faizal","Eeman Mootor", role="ctb"),
     person("Julio Cesar","Cortes Rios", role="ctb"))
 Description: Estimate subclonal copy number from whole genome sequencing or SNP6 data.
-Depends: 
-  R (>= 4.3.1),
+Depends:
+  R (>= 4.3.0)
+Imports:
   stats,
   utils,
   graphics,
-  grDevices
-Imports:
+  grDevices,
+  ASCAT,
+  copynumber,
   RColorBrewer,
-  ASCAT (>= 3.1.3),
   ggplot2,
   readr,
   gtools,
@@ -36,18 +37,34 @@ Imports:
   splines,
   GenomicRanges,
   VariantAnnotation,
-  copynumber,
-  data.table
+  data.table,
+  IRanges,
+  S4Vectors,
+  logger,
+  vroom,
+  cli,
+  fs,
+  methods,
+  rlang,
+  SummarizedExperiment,
+  collapse,
+  dplyr,
+  Rcpp,
+  RcppRoll,
+  optparse,
+  tictoc,
+  devtools
 Remotes:
-  VanLoo-lab/ascat/ASCAT
-URL: https://github.com/Wedge-Oxford/battenberg
+  Crick-CancerGenomics/ascat/ASCAT,
+  igordot/copynumber
+URL: https://github.com/ohsu-comp-bio/battenberg
+LinkingTo: Rcpp
 LazyLoad: yes
 Suggests:
-  testthat,
+  lintr,
+  styler,
   knitr,
-  rmarkdown,
-  ggplot2,
-  dplyr
-VignetteBuilder: 
+  rmarkdown
+VignetteBuilder:
   knitr
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3
