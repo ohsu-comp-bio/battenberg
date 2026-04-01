@@ -47,9 +47,9 @@ battenberg_cli <- function() {
     ),
 
     # Reference Paths
-    optparse::make_option(c("--imputeinfofile"),
+    optparse::make_option(c("--reference_info_file"),
       type = "character", default = NA,
-      help = "Path to impute info file (optional if beagle_input_dir and chrom_names are provided)"
+      help = "Path to the reference info file (formerly impute_info.txt). Optional if beagle_input_dir and chrom_names are provided."
     ),
     optparse::make_option(c("--g1000prefix"),
       type = "character",
@@ -91,9 +91,9 @@ battenberg_cli <- function() {
       type = "character", default = NA,
       help = "Directory containing pre-calculated allele counts"
     ),
-    optparse::make_option(c("--impute_results_dir"),
+    optparse::make_option(c("--phasing_results_dir"),
       type = "character", default = NA,
-      help = "Directory containing pre-calculated imputation results"
+      help = "Directory containing pre-calculated phasing results (Impute2 or Beagle)"
     ),
 
     # Executables & Hardware
@@ -106,7 +106,26 @@ battenberg_cli <- function() {
       help = "Number of chromosomes to process in parallel during phasing/haplotyping"
     ),
     optparse::make_option(c("--data_type"),
-      type = "character", default = "wgs"
+      type = "character", default = "wgs",
+      help = "Type of data: wgs, cell_line, germline, or snp6"
+    ),
+    optparse::make_option(c("--phasing_engine"),
+      type = "character", default = "impute2",
+      help = "Phasing engine to use: impute2 or beagle (default impute2). Auto-detects beagle if --beaglejar is provided."
+    ),
+
+    # Beagle Specifics
+    optparse::make_option(c("--beagle_input_dir"),
+      type = "character", default = NA,
+      help = "Directory containing pre-calculated Beagle VCF output files"
+    ),
+    optparse::make_option(c("--beaglejar"),
+      type = "character", default = NA,
+      help = "Path to Beagle 5 JAR file. Trigger internal phasing if provided."
+    ),
+    optparse::make_option(c("--beagleref_dir"),
+      type = "character", default = NA,
+      help = "Directory containing Beagle reference VCF files."
     ),
 
     # Tuning Parameters (Gamma & Kmin)
@@ -193,12 +212,6 @@ battenberg_cli <- function() {
     optparse::make_option(c("--calc_seg_baf_option"),
       type = "integer", default = 3
     ),
-
-    # Beagle Specifics
-    optparse::make_option(c("--beagle_input_dir"),
-      type = "character", default = NA,
-      help = "Directory containing Beagle VCF output files"
-    ),
     optparse::make_option(c("--prior_breakpoints_file"),
       type = "character", default = NULL
     ),
@@ -219,21 +232,6 @@ battenberg_cli <- function() {
     ),
     optparse::make_option(c("--snp6_reference_info_file"),
       type = "character", default = NA
-    ),
-    optparse::make_option(c("--apt_probeset_genotype_exe"),
-      type = "character", default = "apt-probeset-genotype"
-    ),
-    optparse::make_option(c("--apt_probeset_summarize_exe"),
-      type = "character", default = "apt-probeset-summarize"
-    ),
-    optparse::make_option(c("--norm_geno_clust_exe"),
-      type = "character", default = "normalize_affy_geno_cluster.pl"
-    ),
-    optparse::make_option(c("--birdseed_report_file"),
-      type = "character", default = "birdseed.report.txt"
-    ),
-    optparse::make_option(c("--heterozygous_filter"),
-      type = "character", default = "none"
     ),
 
     # Logging & Debug
@@ -272,6 +270,9 @@ battenberg_cli <- function() {
   if (!is.null(opt$chrom_names)) {
     opt$chrom_names <- unlist(strsplit(opt$chrom_names, ","))
   }
+
+  # Remove CLI-only arguments before calling the main logic
+  opt$logging_path <- NULL
 
   # Execute main function
   do.call(battenberg, opt)

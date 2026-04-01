@@ -101,9 +101,9 @@ battenberg <- function(
   g1000prefix,
   problemloci,
   allele_counts_dir,
-  impute_results_dir = NA,
+  phasing_results_dir = NA,
   beagle_input_dir = NA,
-  imputeinfofile = NA,
+  reference_info_file = NA,
   chrom_names = NULL,
   gccorrectprefix = NULL,
   repliccorrectprefix = NULL,
@@ -137,11 +137,6 @@ battenberg <- function(
   multisample_maxlag = 90,
   segmentation_gamma_multisample = 5,
   snp6_reference_info_file = NA,
-  apt_probeset_genotype_exe = "apt-probeset-genotype",
-  apt_probeset_summarize_exe = "apt-probeset-summarize",
-  norm_geno_clust_exe = "normalize_affy_geno_cluster.pl",
-  birdseed_report_file = "birdseed.report.txt",
-  heterozygous_filter = "none",
   prior_breakpoints_file = NULL,
   genomebuild = "hg38",
   chrom_coord_file = NULL,
@@ -151,8 +146,19 @@ battenberg <- function(
   grid_psi_step = 0.05,
   grid_rho_step = 0.01,
   local_min_window_size = 7,
-  logging_path = "."
+  beaglejar = NA,
+  beagleref_dir = NA,
+  phasing_engine = "impute2"
 ) {
+  # Intelligent inference of phasing engine
+  if (is.na(phasing_engine) || phasing_engine == "impute2") {
+    if (!is.na(beaglejar) && file.exists(beaglejar)) {
+      phasing_engine <- "beagle"
+    } else if (!is.na(beagle_input_dir)) {
+      phasing_engine <- "beagle"
+    }
+  }
+
   libs <- .libPaths()
 
   # Set global thread limits based on user configuration
@@ -230,15 +236,15 @@ battenberg <- function(
       log_failure("Please provide a path to a problematic loci file")
     }
 
-    # check whether the impute_info.txt file contains correct paths
-    if (!is.na(imputeinfofile)) {
-      if (!file.exists(imputeinfofile)) {
-        log_failure("imputeinfofile provided but does not exist: {imputeinfofile}")
+    # check whether the reference_info_file contains correct paths
+    if (!is.na(reference_info_file)) {
+      if (!file.exists(reference_info_file)) {
+        log_failure("reference_info_file provided but does not exist: {reference_info_file}")
       }
       check_imputeinfofile(
-        imputeinfofile = imputeinfofile,
+        reference_info_file = reference_info_file,
         is_male = ismale,
-        usebeagle = !is.na(beagle_input_dir)
+        usebeagle = (phasing_engine == "beagle")
       )
     }
 
@@ -250,20 +256,27 @@ battenberg <- function(
         log_info("Running Battenberg in multisample mode on {nsamples} samples: \\
                 {paste(samplename, collapse = ', ')}")
       }
-      chrom_names <- get_chrom_names(imputeinfofile, ismale, analysis = analysis, chrom_names = chrom_names)
+      chrom_names <- get_chrom_names(
+        reference_info_file = reference_info_file,
+        is_male = ismale,
+        analysis = analysis,
+        chrom_names = chrom_names,
+        usebeagle = (phasing_engine == "beagle"),
+        beagleref_dir = beagleref_dir
+      )
     } else if (data_type == "snp6" || data_type == "SNP6") {
       if (nsamples > 1) {
         log_failure("Battenberg multisample mode has \\
        not been tested with SNP6 data")
       }
-      chrom_names <- get_chrom_names(imputeinfofile, TRUE, chrom_names = chrom_names)
+      chrom_names <- get_chrom_names(reference_info_file, TRUE, chrom_names = chrom_names)
     }
     # Global parameter validation
     if (is.na(allele_counts_dir) || !dir.exists(allele_counts_dir)) {
       log_failure("allele_counts_dir is missing or invalid: {allele_counts_dir}")
     }
-    if (is.na(impute_results_dir) && is.na(beagle_input_dir)) {
-      log_failure("Either impute_results_dir or beagle_input_dir must be provided.")
+    if (is.na(phasing_results_dir) && is.na(beagle_input_dir)) {
+      log_failure("Either phasing_results_dir or beagle_input_dir must be provided.")
     }
 
     for (sampleidx in 1:nsamples) {
@@ -364,10 +377,7 @@ battenberg <- function(
           tumourname = samplename[sampleidx],
           chrom_names = chrom_names,
           snp6_reference_info_file = snp6_reference_info_file,
-          apt_probeset_genotype_exe = apt_probeset_genotype_exe,
-          apt_probeset_summarize_exe = apt_probeset_summarize_exe,
-          norm_geno_clust_exe = norm_geno_clust_exe,
-          birdseed_report_file = birdseed_report_file,
+          birdseed_report_file = "birdseed.report.txt",
           genomebuild = genomebuild
         )
       } else {
@@ -380,7 +390,7 @@ battenberg <- function(
 
       if (data_type == "snp6" || data_type == "SNP6") {
         # Infer what the gender is - WGS requires it to be specified
-        gender <- infer_gender_birdseed(birdseed_report_file)
+        gender <- infer_gender_birdseed("birdseed.report.txt")
         ismale <- gender == "male"
       }
 
@@ -426,15 +436,17 @@ battenberg <- function(
             normalname = normalname,
             ismale = ismale,
             problemloci = problemloci,
-            impute_results_dir = impute_results_dir,
+            phasing_results_dir = phasing_results_dir,
             min_normal_depth = min_normal_depth,
             chrom_names = chrom_names,
-            imputeinfofile = imputeinfofile,
-            snp6_reference_info_file = NA,
-            heterozygous_filter = NA,
+            reference_info_file = reference_info_file,
             beagle_input_dir = beagle_input_dir,
             allele_frequencies_dir = allele_counts_dir,
-            chrom_coord_file = chrom_coord_file
+            chrom_coord_file = chrom_coord_file,
+            beaglejar = beaglejar,
+            beagleref_dir = beagleref_dir,
+            phasing_engine = phasing_engine,
+            threads_per_chromosome = threads_per_chromosome
           )
         } else {
           .libPaths(libs)
@@ -446,15 +458,17 @@ battenberg <- function(
             normalname = normalname,
             ismale = ismale,
             problemloci = problemloci,
-            impute_results_dir = impute_results_dir,
+            phasing_results_dir = phasing_results_dir,
             min_normal_depth = min_normal_depth,
             chrom_names = chrom_names,
-            imputeinfofile = imputeinfofile,
-            snp6_reference_info_file = snp6_reference_info_file,
-            heterozygous_filter = heterozygous_filter,
+            reference_info_file = reference_info_file,
             beagle_input_dir = beagle_input_dir,
             allele_frequencies_dir = allele_counts_dir,
-            chrom_coord_file = chrom_coord_file
+            chrom_coord_file = chrom_coord_file,
+            beaglejar = beaglejar,
+            beagleref_dir = beagleref_dir,
+            phasing_engine = phasing_engine,
+            threads_per_chromosome = threads_per_chromosome
           )
         }
       }

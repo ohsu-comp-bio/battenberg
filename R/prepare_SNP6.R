@@ -17,10 +17,7 @@ cel2baf_logr <- function(
   normal_cel_file,
   tumour_cel_file,
   output_file,
-  snp6_reference_info_file,
-  apt_probeset_genotype_exe = "apt-probeset-genotype",
-  apt_probeset_summarize_exe = "apt-probeset-summarize",
-  norm_geno_clust_exe = "normalize_affy_geno_cluster.pl"
+  snp6_reference_info_file
 ) {
   # Unpack pointers to reference files required during this step
   ref_files <- parse_snp6_ref_file(snp6_reference_info_file)
@@ -32,17 +29,17 @@ cel2baf_logr <- function(
   UNM_NORMALS <- ref_files[ref_files$variable == "UNM_NORMALS", ]$reference_file
 
   # Unpack the normal cel file
-  cmd <- paste(apt_probeset_genotype_exe, "-c", GW_SNP6, "-a birdseed", "--read-models-birdseed", SNP6_BIRDSEED_MODELS, "--special-snps", SNP6_SPECIALSNPS, "--cels", normal_cel_file)
+  cmd <- paste("apt-probeset-genotype", "-c", GW_SNP6, "-a birdseed", "--read-models-birdseed", SNP6_BIRDSEED_MODELS, "--special-snps", SNP6_SPECIALSNPS, "--cels", normal_cel_file)
   log_info(cmd)
   exit_code <- system(cmd, wait = TRUE)
   stopifnot(exit_code == 0)
   # Unpack the tumour cel file
-  cmd <- paste(apt_probeset_summarize_exe, "--cdf-file", GW_SNP6, "--analysis quant-norm.sketch=50000,pm-only,med-polish,expr.genotype=true", "--target-sketch", QUANT_NORM_TARGET, normal_cel_file, tumour_cel_file)
+  cmd <- paste("apt-probeset-summarize", "--cdf-file", GW_SNP6, "--analysis quant-norm.sketch=50000,pm-only,med-polish,expr.genotype=true", "--target-sketch", QUANT_NORM_TARGET, normal_cel_file, tumour_cel_file)
   log_info(cmd)
   exit_code <- system(cmd, wait = TRUE)
   stopifnot(exit_code == 0)
   # Construct the LogR and BAF and push that to
-  cmd <- paste(norm_geno_clust_exe, UNM_NORMALS, "quant-norm.pm-only.med-polish.expr.summary.txt", "-locfile", LOCFILE, "-out", output_file)
+  cmd <- paste("normalize_affy_geno_cluster.pl", UNM_NORMALS, "quant-norm.pm-only.med-polish.expr.summary.txt", "-locfile", LOCFILE, "-out", output_file)
   log_info(cmd)
   exit_code <- system(cmd, wait = TRUE)
   stopifnot(exit_code == 0)
@@ -401,9 +398,6 @@ prepare_snp6 <- function(
   tumour_cel_file, normal_cel_file,
   tumourname, chrom_names,
   snp6_reference_info_file,
-  apt_probeset_genotype_exe = "apt-probeset-genotype",
-  apt_probeset_summarize_exe = "apt-probeset-summarize",
-  norm_geno_clust_exe = "normalize_affy_geno_cluster.pl",
   birdseed_report_file = "birdseed.report.txt",
   genomebuild = "hg38"
 ) {
@@ -412,10 +406,7 @@ prepare_snp6 <- function(
     normal_cel_file = normal_cel_file,
     tumour_cel_file = tumour_cel_file,
     output_file = paste(tumourname, "_lrr_baf.txt", sep = ""),
-    snp6_reference_info_file = snp6_reference_info_file,
-    apt_probeset_genotype_exe = apt_probeset_genotype_exe,
-    apt_probeset_summarize_exe = apt_probeset_summarize_exe,
-    norm_geno_clust_exe = norm_geno_clust_exe
+    snp6_reference_info_file = snp6_reference_info_file
   )
 
   gc_correct(
